@@ -27,13 +27,10 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: false
 
-      - name: Resolve dependencies
-        run: go mod tidy
-
-      - name: Print dependency checksums
-        if: matrix.go == '1.25.x'
-        shell: bash
-        run: base64 -w0 go.sum && echo
+      - name: Verify module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
       - name: Verify formatting
         shell: bash
@@ -87,8 +84,8 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Resolve dependencies
-        run: go mod tidy
+      - name: Download dependencies
+        run: go mod download
 
       - name: Run PostgreSQL integration tests
         run: go test -race ./postgres/runner -count=1
