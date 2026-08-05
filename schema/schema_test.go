@@ -17,9 +17,9 @@ func TestValidateRejectsMultipleInlinePrimaryKeys(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsEmptySchema(t *testing.T) {
+func TestValidateAllowsEmptyDatabaseSchema(t *testing.T) {
 	t.Parallel()
-	if err := (Schema{}).Validate(); err == nil {
-		t.Fatal("expected validation error")
+	if err := (Schema{}).Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }

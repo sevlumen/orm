@@ -31,20 +31,7 @@ func renderTable(table schema.Table) (string, error) {
 
 	columns := make([]string, 0, len(table.Columns))
 	for _, column := range table.Columns {
-		parts := []string{quote(column.Name), column.Type}
-		if !column.Nullable {
-			parts = append(parts, "NOT NULL")
-		}
-		if column.Default != "" {
-			parts = append(parts, "DEFAULT", column.Default)
-		}
-		if column.Unique {
-			parts = append(parts, "UNIQUE")
-		}
-		if column.PrimaryKey {
-			parts = append(parts, "PRIMARY KEY")
-		}
-		columns = append(columns, "    "+strings.Join(parts, " "))
+		columns = append(columns, "    "+renderColumn(column))
 	}
 
 	return "CREATE TABLE " + quote(table.Name) + " (\n" +
