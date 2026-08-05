@@ -2,7 +2,7 @@
 
 PostgreSQL-first, entity-driven ORM and migration tooling for Go.
 
-> Development preview. The current foundation supports validated Go entities, deterministic PostgreSQL DDL, versioned schema snapshots, risk-aware migration diffs, and reversible SQL generation. It is not yet a production-ready ORM runtime.
+> Development preview. The current foundation supports validated Go entities, deterministic PostgreSQL DDL, versioned schema snapshots, risk-aware migration diffs, reversible SQL generation, and checksummed migration artifacts. It is not yet a production-ready ORM runtime.
 
 ## Install
 
@@ -56,9 +56,9 @@ CREATE TABLE "users" (
 );
 ```
 
-## Generate a migration
+## Generate and persist a migration
 
-Use an empty snapshot for the first migration. Persist the returned snapshot next to the generated SQL and use it as the input for the next migration.
+Use an empty snapshot for the first migration. The artifact package writes a complete migration directory using a temporary directory and atomic rename, then verifies file checksums when loading it again.
 
 ```go
 package main
@@ -69,6 +69,7 @@ import (
 
     orm "github.com/sevlumen/orm"
     "github.com/sevlumen/orm/migration"
+    "github.com/sevlumen/orm/migration/artifact"
 )
 
 func main() {
@@ -78,24 +79,39 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-
     if generated.Risk == migration.RiskDestructive {
         log.Fatalf("destructive migration requires manual review: %v", generated.Warnings)
     }
 
-    snapshotJSON, err := next.Marshal()
+    bundle, err := artifact.Build(
+        "20260805210000_create_users",
+        generated,
+        next,
+    )
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Println("-- up.sql")
-    fmt.Print(generated.Up)
-    fmt.Println("-- down.sql")
-    fmt.Print(generated.Down)
-    fmt.Println("-- snapshot.json")
-    fmt.Print(string(snapshotJSON))
+    path, err := artifact.Write("migrations", bundle)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(path)
 }
 ```
+
+The generated directory contains:
+
+```text
+migrations/
+└── 20260805210000_create_users/
+    ├── manifest.json
+    ├── up.sql
+    ├── down.sql
+    └── snapshot.json
+```
+
+Migration IDs use `YYYYMMDDHHMMSS_lower_snake_case`. `artifact.Load` verifies the strict manifest, snapshot, regular-file boundaries, and SHA-256 checksums. `artifact.List` returns migration IDs in deterministic order.
 
 Migration operations are classified as:
 
@@ -126,7 +142,7 @@ SQL types and default expressions are trusted schema-author input. Never constru
 
 Before a production-ready v1.0 release, the project still needs:
 
-1. migration artifacts, checksums, history, locking, and transactional application;
+1. PostgreSQL migration history, advisory locking, checksum enforcement, and transactional application;
 2. indexes, foreign keys, composite keys, enums, and PostgreSQL-specific schema features;
 3. generated typed CRUD/query APIs on top of `pgx`;
 4. PostgreSQL integration tests, compatibility guarantees, observability hooks, and release hardening;
