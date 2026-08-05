@@ -2,7 +2,12 @@
 
 PostgreSQL-first, entity-driven ORM and migration tooling for Go.
 
-> Development preview. The current foundation supports validated Go entities, deterministic PostgreSQL DDL, versioned schema snapshots, risk-aware migration diffs, reversible SQL generation, and checksummed migration artifacts. It is not yet a production-ready ORM runtime.
+> Development preview. The project currently provides validated Go entities, deterministic PostgreSQL DDL, versioned schema snapshots, risk-aware diffs, checksummed migration artifacts, and a transactional PostgreSQL migration runner. The typed ORM query runtime is still under development.
+
+## Requirements
+
+- Go 1.25 or newer
+- PostgreSQL 14 or newer
 
 ## Install
 
@@ -58,46 +63,30 @@ CREATE TABLE "users" (
 
 ## Generate and persist a migration
 
-Use an empty snapshot for the first migration. The artifact package writes a complete migration directory using a temporary directory and atomic rename, then verifies file checksums when loading it again.
+Use an empty snapshot for the first migration. The artifact package writes a complete migration directory through a temporary directory and atomic rename, then verifies strict manifests and SHA-256 checksums when loading it.
 
 ```go
-package main
+previous := migration.EmptySnapshot()
 
-import (
-    "fmt"
-    "log"
-
-    orm "github.com/sevlumen/orm"
-    "github.com/sevlumen/orm/migration"
-    "github.com/sevlumen/orm/migration/artifact"
-)
-
-func main() {
-    previous := migration.EmptySnapshot()
-
-    generated, next, err := orm.PostgreSQLMigration(previous, User{})
-    if err != nil {
-        log.Fatal(err)
-    }
-    if generated.Risk == migration.RiskDestructive {
-        log.Fatalf("destructive migration requires manual review: %v", generated.Warnings)
-    }
-
-    bundle, err := artifact.Build(
-        "20260805210000_create_users",
-        generated,
-        next,
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    path, err := artifact.Write("migrations", bundle)
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Println(path)
+generated, next, err := orm.PostgreSQLMigration(previous, User{})
+if err != nil {
+    log.Fatal(err)
 }
+
+bundle, err := artifact.Build(
+    "20260805210000_create_users",
+    generated,
+    next,
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+path, err := artifact.Write("migrations", bundle)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(path)
 ```
 
 The generated directory contains:
@@ -111,15 +100,73 @@ migrations/
     └── snapshot.json
 ```
 
-Migration IDs use `YYYYMMDDHHMMSS_lower_snake_case`. `artifact.Load` verifies the strict manifest, snapshot, regular-file boundaries, and SHA-256 checksums. `artifact.List` returns migration IDs in deterministic order.
+Migration IDs use `YYYYMMDDHHMMSS_lower_snake_case`. `artifact.Load` verifies the manifest, snapshot, regular-file boundaries, size limits, and checksums. `artifact.List` returns migration IDs in deterministic order.
 
-Migration operations are classified as:
+## Apply migrations to PostgreSQL
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/sevlumen/orm/migration"
+    "github.com/sevlumen/orm/postgres/runner"
+)
+
+func main() {
+    ctx := context.Background()
+
+    pool, err := pgxpool.New(ctx, "postgres://app:secret@localhost/app")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer pool.Close()
+
+    migrations, err := runner.New(pool, runner.Config{
+        MigrationsDir: "migrations",
+        MaximumRisk:   migration.RiskReview,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    status, err := migrations.Status(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("migration status: %#v", status)
+
+    applied, err := migrations.Apply(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("applied: %#v", applied)
+}
+```
+
+Runner behavior:
+
+- acquires one PostgreSQL connection and a session-level advisory lock for the complete operation;
+- creates the configurable migration history table when status, apply, or rollback is first used;
+- verifies that applied history is an exact prefix of the local artifact sequence;
+- rejects edited or missing applied migrations through complete artifact checksums;
+- preflights every pending migration against `MaximumRisk` before applying the first one;
+- executes each migration and its history mutation in one transaction;
+- rolls back the latest applied migrations in reverse order;
+- rejects transaction-control statements and `COPY` scripts because the runner owns transaction boundaries and does not provide an external COPY data stream.
+
+`MaximumRisk` defaults to `safe`. Set it explicitly to `review` or `destructive` only after reviewing the generated SQL. Generated rollback SQL can restore schema shape but cannot restore data removed by destructive migrations.
+
+## Migration risk levels
 
 - `safe`: straightforward additive changes;
-- `review`: changes that can fail depending on existing data, such as `SET NOT NULL` or type conversion;
+- `review`: changes that can fail depending on existing data, such as `SET NOT NULL`, type conversions, or constrained-column additions;
 - `destructive`: dropping a table or column.
 
-Generated rollback SQL recreates schema objects but cannot restore data removed by a destructive migration. Review all generated SQL before applying it. Column/table renames and primary-key or unique-constraint changes are intentionally not guessed; write an explicit migration for those operations.
+Column/table renames and primary-key or unique-constraint changes are intentionally not guessed. Write an explicit migration for operations where intent cannot be inferred safely.
 
 ## Entity tags
 
@@ -136,27 +183,29 @@ Generated rollback SQL recreates schema objects but cannot restore data removed 
 
 Pointers are nullable by default. Non-pointer fields are non-nullable. Supported inferred types currently include strings, booleans, signed integers, floats, `[]byte`, and `time.Time`. Custom Go types can use an explicit `type:` tag.
 
-SQL types and default expressions are trusted schema-author input. Never construct them from request data or other untrusted input.
+SQL types, default expressions, and migration SQL are trusted developer-authored inputs. Never construct them from request data or other untrusted input.
 
 ## Road to v1.0
 
 Before a production-ready v1.0 release, the project still needs:
 
-1. PostgreSQL migration history, advisory locking, checksum enforcement, and transactional application;
-2. indexes, foreign keys, composite keys, enums, and PostgreSQL-specific schema features;
-3. generated typed CRUD/query APIs on top of `pgx`;
-4. PostgreSQL integration tests, compatibility guarantees, observability hooks, and release hardening;
-5. stable CLI and documented upgrade/rollback procedures.
+1. indexes, foreign keys, composite keys, checks, enums, and PostgreSQL-specific schema features;
+2. generated typed CRUD/query APIs on top of `pgx`;
+3. stable CLI commands for generate, diff, validate, apply, rollback, and status;
+4. observability hooks, fuzzing, vulnerability scanning, release automation, and compatibility policy;
+5. release-candidate validation in a real application.
 
 ## Development
 
 ```bash
 gofmt -w .
+go mod tidy
+git diff --exit-code -- go.mod go.sum
 go vet ./...
 go test -race ./...
 ```
 
-CI tests the minimum supported Go version and the current stable Go release.
+CI tests Go 1.25 and the current stable Go release, plus PostgreSQL 14 and 18 integration matrices.
 
 ## License
 
