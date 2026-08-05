@@ -200,6 +200,13 @@ func readRegularFile(path string, maximum int64) ([]byte, error) {
 		return nil, fmt.Errorf("artifact: open %s: %w", filepath.Base(path), err)
 	}
 	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("artifact: stat opened %s: %w", filepath.Base(path), err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("artifact: %s changed while opening", filepath.Base(path))
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil {
 		return nil, fmt.Errorf("artifact: read %s: %w", filepath.Base(path), err)
