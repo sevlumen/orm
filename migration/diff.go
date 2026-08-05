@@ -58,6 +58,72 @@ type Plan struct {
 	Operations []Operation
 }
 
+// Validate checks that a plan is safe to pass to a renderer without panics.
+func (p Plan) Validate() error {
+	for i, operation := range p.Operations {
+		if strings.TrimSpace(operation.Table) == "" {
+			return fmt.Errorf("migration: operation %d has no table name", i)
+		}
+		if operation.Risk > RiskDestructive {
+			return fmt.Errorf("migration: operation %d has invalid risk %d", i, operation.Risk)
+		}
+		switch operation.Kind {
+		case CreateTable:
+			if operation.AfterTable == nil {
+				return fmt.Errorf("migration: create_table operation %d has no after table", i)
+			}
+			if operation.AfterTable.Name != operation.Table {
+				return fmt.Errorf("migration: create_table operation %d table name mismatch", i)
+			}
+			if err := (schema.Schema{Tables: []schema.Table{*operation.AfterTable}}).Validate(); err != nil {
+				return fmt.Errorf("migration: create_table operation %d: %w", i, err)
+			}
+		case DropTable:
+			if operation.BeforeTable == nil {
+				return fmt.Errorf("migration: drop_table operation %d has no before table", i)
+			}
+			if operation.BeforeTable.Name != operation.Table {
+				return fmt.Errorf("migration: drop_table operation %d table name mismatch", i)
+			}
+		case AddColumn:
+			if operation.AfterColumn == nil {
+				return fmt.Errorf("migration: add_column operation %d has no after column", i)
+			}
+			if err := validateOperationColumn(operation.Table, *operation.AfterColumn); err != nil {
+				return fmt.Errorf("migration: add_column operation %d: %w", i, err)
+			}
+		case DropColumn:
+			if operation.BeforeColumn == nil {
+				return fmt.Errorf("migration: drop_column operation %d has no before column", i)
+			}
+			if err := validateOperationColumn(operation.Table, *operation.BeforeColumn); err != nil {
+				return fmt.Errorf("migration: drop_column operation %d: %w", i, err)
+			}
+		case AlterColumn:
+			if operation.BeforeColumn == nil || operation.AfterColumn == nil {
+				return fmt.Errorf("migration: alter_column operation %d requires before and after columns", i)
+			}
+			if operation.BeforeColumn.Name != operation.AfterColumn.Name {
+				return fmt.Errorf("migration: alter_column operation %d cannot rename columns", i)
+			}
+			if err := validateOperationColumn(operation.Table, *operation.BeforeColumn); err != nil {
+				return fmt.Errorf("migration: alter_column operation %d before column: %w", i, err)
+			}
+			if err := validateOperationColumn(operation.Table, *operation.AfterColumn); err != nil {
+				return fmt.Errorf("migration: alter_column operation %d after column: %w", i, err)
+			}
+		default:
+			return fmt.Errorf("migration: operation %d has unsupported kind %q", i, operation.Kind)
+		}
+	}
+	return nil
+}
+
+func validateOperationColumn(table string, column schema.Column) error {
+	model := schema.Schema{Tables: []schema.Table{{Name: table, Columns: []schema.Column{column}}}}
+	return model.Validate()
+}
+
 // MaxRisk returns the highest risk present in the plan.
 func (p Plan) MaxRisk() Risk {
 	result := RiskSafe
@@ -150,8 +216,18 @@ func Diff(before, after Snapshot) (Plan, error) {
 }
 
 func addColumnRisk(column schema.Column) (Risk, string) {
+	var reasons []string
 	if !column.Nullable && column.Default == "" {
-		return RiskReview, fmt.Sprintf("adding non-null column %s without a default can fail on a non-empty table", column.Name)
+		reasons = append(reasons, fmt.Sprintf("adding non-null column %s without a default can fail on a non-empty table", column.Name))
+	}
+	if column.Unique {
+		reasons = append(reasons, fmt.Sprintf("adding unique column %s can fail when existing rows produce duplicate values", column.Name))
+	}
+	if column.PrimaryKey {
+		reasons = append(reasons, fmt.Sprintf("adding primary-key column %s requires valid values for every existing row", column.Name))
+	}
+	if len(reasons) > 0 {
+		return RiskReview, strings.Join(reasons, "; ")
 	}
 	return RiskSafe, ""
 }
