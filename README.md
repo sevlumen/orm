@@ -65,10 +65,11 @@ CREATE TABLE "users" (
 | `primaryKey` | Mark the column as the primary key |
 | `unique` | Add a unique constraint |
 | `notNull` | Force `NOT NULL` |
+| `nullable` | Allow `NULL` for a non-pointer field |
 | `default:expression` | Add a PostgreSQL default expression |
 | `-` | Ignore the field |
 
-Pointers are nullable by default. Non-pointer fields are non-nullable. Supported inferred types currently include strings, booleans, integers, floats, `[]byte`, and `time.Time`.
+Pointers are nullable by default. Non-pointer fields are non-nullable. Supported inferred types currently include strings, booleans, signed integers, floats, `[]byte`, and `time.Time`. Custom Go types can use an explicit `type:` tag.
 
 ## Design direction
 
@@ -85,9 +86,9 @@ The project is intentionally PostgreSQL-first and code-generation-friendly. Plan
 ```bash
 gofmt -w .
 go vet ./...
-go test ./...
+go test -race ./...
 ```
 
 ## License
 
-A license has not been selected yet.
+Apache License 2.0. See [LICENSE](LICENSE).
