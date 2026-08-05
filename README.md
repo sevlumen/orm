@@ -2,7 +2,7 @@
 
 PostgreSQL-first, entity-driven ORM and migration tooling for Go.
 
-> Early MVP: the current API converts Go entity structs into deterministic PostgreSQL `CREATE TABLE` SQL. Schema snapshots, migration diffs, relations and typed queries are planned next.
+> Development preview. The current foundation supports validated Go entities, deterministic PostgreSQL DDL, versioned schema snapshots, risk-aware migration diffs, and reversible SQL generation. It is not yet a production-ready ORM runtime.
 
 ## Install
 
@@ -10,7 +10,7 @@ PostgreSQL-first, entity-driven ORM and migration tooling for Go.
 go get github.com/sevlumen/orm
 ```
 
-## Quick start
+## Entity to PostgreSQL SQL
 
 ```go
 package main
@@ -56,6 +56,55 @@ CREATE TABLE "users" (
 );
 ```
 
+## Generate a migration
+
+Use an empty snapshot for the first migration. Persist the returned snapshot next to the generated SQL and use it as the input for the next migration.
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    orm "github.com/sevlumen/orm"
+    "github.com/sevlumen/orm/migration"
+)
+
+func main() {
+    previous := migration.EmptySnapshot()
+
+    generated, next, err := orm.PostgreSQLMigration(previous, User{})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if generated.Risk == migration.RiskDestructive {
+        log.Fatalf("destructive migration requires manual review: %v", generated.Warnings)
+    }
+
+    snapshotJSON, err := next.Marshal()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("-- up.sql")
+    fmt.Print(generated.Up)
+    fmt.Println("-- down.sql")
+    fmt.Print(generated.Down)
+    fmt.Println("-- snapshot.json")
+    fmt.Print(string(snapshotJSON))
+}
+```
+
+Migration operations are classified as:
+
+- `safe`: straightforward additive changes;
+- `review`: changes that can fail depending on existing data, such as `SET NOT NULL` or type conversion;
+- `destructive`: dropping a table or column.
+
+Generated rollback SQL recreates schema objects but cannot restore data removed by a destructive migration. Review all generated SQL before applying it. Column/table renames and primary-key or unique-constraint changes are intentionally not guessed; write an explicit migration for those operations.
+
 ## Entity tags
 
 | Tag | Meaning |
@@ -71,15 +120,17 @@ CREATE TABLE "users" (
 
 Pointers are nullable by default. Non-pointer fields are non-nullable. Supported inferred types currently include strings, booleans, signed integers, floats, `[]byte`, and `time.Time`. Custom Go types can use an explicit `type:` tag.
 
-## Design direction
+SQL types and default expressions are trusted schema-author input. Never construct them from request data or other untrusted input.
 
-The project is intentionally PostgreSQL-first and code-generation-friendly. Planned layers:
+## Road to v1.0
 
-1. Entity metadata and schema validation.
-2. Snapshot-based migration diff and SQL files.
-3. PostgreSQL migration history and drift detection.
-4. Generated typed CRUD/query APIs on top of `pgx`.
-5. Optional tracking sessions and `SaveChanges` semantics.
+Before a production-ready v1.0 release, the project still needs:
+
+1. migration artifacts, checksums, history, locking, and transactional application;
+2. indexes, foreign keys, composite keys, enums, and PostgreSQL-specific schema features;
+3. generated typed CRUD/query APIs on top of `pgx`;
+4. PostgreSQL integration tests, compatibility guarantees, observability hooks, and release hardening;
+5. stable CLI and documented upgrade/rollback procedures.
 
 ## Development
 
@@ -88,6 +139,8 @@ gofmt -w .
 go vet ./...
 go test -race ./...
 ```
+
+CI tests the minimum supported Go version and the current stable Go release.
 
 ## License
 
