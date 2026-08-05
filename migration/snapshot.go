@@ -19,6 +19,11 @@ type Snapshot struct {
 	Schema  schema.Schema `json:"schema"`
 }
 
+// EmptySnapshot returns the starting point for an application's first migration.
+func EmptySnapshot() Snapshot {
+	return Snapshot{Version: SnapshotVersion, Schema: schema.Schema{}}
+}
+
 // NewSnapshot validates and canonicalizes a schema for persistence.
 func NewSnapshot(model schema.Schema) (Snapshot, error) {
 	if err := model.Validate(); err != nil {
