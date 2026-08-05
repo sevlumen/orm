@@ -8,31 +8,27 @@ import (
 
 // Schema is a database-independent representation of application entities.
 type Schema struct {
-	Tables []Table
+	Tables []Table `json:"tables"`
 }
 
 // Table describes a relational table.
 type Table struct {
-	Name    string
-	Columns []Column
+	Name    string   `json:"name"`
+	Columns []Column `json:"columns"`
 }
 
 // Column describes a table column.
 type Column struct {
-	Name       string
-	Type       string
-	Nullable   bool
-	PrimaryKey bool
-	Unique     bool
-	Default    string
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	PrimaryKey bool   `json:"primaryKey,omitempty"`
+	Unique     bool   `json:"unique,omitempty"`
+	Default    string `json:"default,omitempty"`
 }
 
-// Validate checks invariants before SQL rendering.
+// Validate checks invariants before SQL rendering or migration planning.
 func (s Schema) Validate() error {
-	if len(s.Tables) == 0 {
-		return fmt.Errorf("schema: at least one table is required")
-	}
-
 	seenTables := map[string]struct{}{}
 	for _, table := range s.Tables {
 		if strings.TrimSpace(table.Name) == "" {
