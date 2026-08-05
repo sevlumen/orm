@@ -27,6 +27,7 @@ func TestValidateMigrationScript(t *testing.T) {
 		"SAVEPOINT before_change;",
 		"RELEASE SAVEPOINT before_change;",
 		"PREPARE TRANSACTION 'migration';",
+		"COPY users FROM STDIN;",
 	}
 	for _, script := range prohibited {
 		if err := validateMigrationScript(script); err == nil {
