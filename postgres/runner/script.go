@@ -32,6 +32,9 @@ func validateMigrationScript(script string) error {
 		if _, prohibited := prohibitedTransactionStatements[first]; prohibited {
 			return fmt.Errorf("runner: transaction-control statement %q is not allowed in migration SQL", strings.Join(prefix, " "))
 		}
+		if first == "COPY" {
+			return fmt.Errorf("runner: COPY statements are not supported in migration SQL")
+		}
 		if first == "START" && len(prefix) > 1 && strings.EqualFold(prefix[1], "TRANSACTION") {
 			return fmt.Errorf("runner: transaction-control statement %q is not allowed in migration SQL", strings.Join(prefix, " "))
 		}
