@@ -56,3 +56,16 @@ func TestDiffRejectsImplicitUniqueChange(t *testing.T) {
 		t.Fatal("expected explicit migration error")
 	}
 }
+
+func TestDiffMarksUniqueColumnAdditionForReview(t *testing.T) {
+	t.Parallel()
+	before := mustSnapshot(t, schema.Schema{Tables: []schema.Table{{Name: "users", Columns: []schema.Column{{Name: "id", Type: "uuid", PrimaryKey: true}}}}})
+	after := mustSnapshot(t, schema.Schema{Tables: []schema.Table{{Name: "users", Columns: []schema.Column{{Name: "id", Type: "uuid", PrimaryKey: true}, {Name: "email", Type: "text", Unique: true, Default: "''"}}}}})
+	plan, err := Diff(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 1 || plan.Operations[0].Risk != RiskReview {
+		t.Fatalf("unexpected plan: %#v", plan)
+	}
+}
