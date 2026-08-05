@@ -1,3 +1,4 @@
+// Package entity converts Go structs into Sevlumen ORM's schema model.
 package entity
 
 import (
@@ -5,9 +6,12 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sevlumen/orm/schema"
 )
+
+var tableNamerType = reflect.TypeOf((*TableNamer)(nil)).Elem()
 
 // TableNamer lets an entity override the default snake_case table name.
 type TableNamer interface {
@@ -16,7 +20,11 @@ type TableNamer interface {
 
 // Parse converts one or more Go structs into the schema intermediate representation.
 func Parse(entities ...any) (schema.Schema, error) {
-	result := schema.Schema{}
+	if len(entities) == 0 {
+		return schema.Schema{}, fmt.Errorf("entity: at least one entity is required")
+	}
+
+	result := schema.Schema{Tables: make([]schema.Table, 0, len(entities))}
 	for _, value := range entities {
 		table, err := parseEntity(value)
 		if err != nil {
@@ -36,7 +44,7 @@ func parseEntity(value any) (schema.Table, error) {
 	}
 
 	t := reflect.TypeOf(value)
-	if t.Kind() == reflect.Pointer {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -44,14 +52,13 @@ func parseEntity(value any) (schema.Table, error) {
 	}
 
 	tableName := snakeCase(t.Name())
-	if namer, ok := value.(TableNamer); ok {
-		tableName = namer.TableName()
-	} else if reflect.PointerTo(t).Implements(reflect.TypeOf((*TableNamer)(nil)).Elem()) {
-		instance := reflect.New(t).Interface().(TableNamer)
-		tableName = instance.TableName()
+	if reflect.PointerTo(t).Implements(tableNamerType) {
+		tableName = reflect.New(t).Interface().(TableNamer).TableName()
+	} else if t.Implements(tableNamerType) {
+		tableName = reflect.Zero(t).Interface().(TableNamer).TableName()
 	}
 
-	table := schema.Table{Name: tableName}
+	table := schema.Table{Name: tableName, Columns: make([]schema.Column, 0, t.NumField())}
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if !field.IsExported() || field.Tag.Get("orm") == "-" {
@@ -68,10 +75,18 @@ func parseEntity(value any) (schema.Table, error) {
 }
 
 func parseField(field reflect.StructField) (schema.Column, error) {
-	options := parseTag(field.Tag.Get("orm"))
-	columnType, nullable, err := postgresType(field.Type)
+	options, err := parseTag(field.Tag.Get("orm"))
 	if err != nil {
 		return schema.Column{}, err
+	}
+
+	fieldType, nullable := dereference(field.Type)
+	columnType := options["type"]
+	if columnType == "" {
+		columnType, err = inferPostgresType(fieldType)
+		if err != nil {
+			return schema.Column{}, err
+		}
 	}
 
 	column := schema.Column{
@@ -85,8 +100,8 @@ func parseField(field reflect.StructField) (schema.Column, error) {
 	if name := options["column"]; name != "" {
 		column.Name = name
 	}
-	if typ := options["type"]; typ != "" {
-		column.Type = typ
+	if options["nullable"] == "true" {
+		column.Nullable = true
 	}
 	if options["notNull"] == "true" || column.PrimaryKey {
 		column.Nullable = false
@@ -94,7 +109,11 @@ func parseField(field reflect.StructField) (schema.Column, error) {
 	return column, nil
 }
 
-func parseTag(tag string) map[string]string {
+func parseTag(tag string) (map[string]string, error) {
+	allowed := map[string]bool{
+		"column": true, "type": true, "primaryKey": true, "unique": true,
+		"notNull": true, "nullable": true, "default": true,
+	}
 	result := map[string]string{}
 	for _, token := range strings.Split(tag, ";") {
 		token = strings.TrimSpace(token)
@@ -102,53 +121,78 @@ func parseTag(tag string) map[string]string {
 			continue
 		}
 		key, value, found := strings.Cut(token, ":")
+		key = strings.TrimSpace(key)
+		if !allowed[key] {
+			return nil, fmt.Errorf("unknown orm tag option %q", key)
+		}
+		if _, exists := result[key]; exists {
+			return nil, fmt.Errorf("duplicate orm tag option %q", key)
+		}
 		if !found {
 			result[key] = "true"
 			continue
 		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("orm tag option %q requires a value", key)
+		}
 		result[key] = value
 	}
-	return result
+	if result["notNull"] == "true" && result["nullable"] == "true" {
+		return nil, fmt.Errorf("notNull and nullable cannot be used together")
+	}
+	return result, nil
 }
 
-func postgresType(t reflect.Type) (string, bool, error) {
+func dereference(t reflect.Type) (reflect.Type, bool) {
 	nullable := false
-	if t.Kind() == reflect.Pointer {
+	for t.Kind() == reflect.Pointer {
 		nullable = true
 		t = t.Elem()
 	}
+	return t, nullable
+}
+
+func inferPostgresType(t reflect.Type) (string, error) {
 	if t == reflect.TypeOf(time.Time{}) {
-		return "timestamptz", nullable, nil
+		return "timestamptz", nil
 	}
 
 	switch t.Kind() {
 	case reflect.String:
-		return "text", nullable, nil
+		return "text", nil
 	case reflect.Bool:
-		return "boolean", nullable, nil
+		return "boolean", nil
+	case reflect.Int8, reflect.Int16:
+		return "smallint", nil
 	case reflect.Int, reflect.Int32:
-		return "integer", nullable, nil
+		return "integer", nil
 	case reflect.Int64:
-		return "bigint", nullable, nil
+		return "bigint", nil
 	case reflect.Float32:
-		return "real", nullable, nil
+		return "real", nil
 	case reflect.Float64:
-		return "double precision", nullable, nil
+		return "double precision", nil
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
-			return "bytea", nullable, nil
+			return "bytea", nil
 		}
 	}
-	return "", false, fmt.Errorf("unsupported Go type %s; use orm:\"type:...\"", t)
+	return "", fmt.Errorf("unsupported Go type %s; use orm:\"type:...\"", t)
 }
 
 func snakeCase(value string) string {
+	runes := []rune(value)
 	var b strings.Builder
-	for i, r := range value {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			b.WriteByte('_')
+	for i, r := range runes {
+		if unicode.IsUpper(r) && i > 0 {
+			previous := runes[i-1]
+			nextIsLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+			if unicode.IsLower(previous) || unicode.IsDigit(previous) || (unicode.IsUpper(previous) && nextIsLower) {
+				b.WriteByte('_')
+			}
 		}
-		b.WriteRune(r)
+		b.WriteRune(unicode.ToLower(r))
 	}
-	return strings.ToLower(b.String())
+	return b.String()
 }
