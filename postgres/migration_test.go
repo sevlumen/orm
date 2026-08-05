@@ -11,7 +11,7 @@ func TestRenderMigration(t *testing.T) {
 	t.Parallel()
 
 	before, err := migration.NewSnapshot(schema.Schema{Tables: []schema.Table{{
-		Name: "users",
+		Name:    "users",
 		Columns: []schema.Column{{Name: "id", Type: "uuid", PrimaryKey: true}},
 	}}})
 	if err != nil {
@@ -39,5 +39,13 @@ func TestRenderMigration(t *testing.T) {
 	wantDown := "ALTER TABLE \"users\" DROP COLUMN \"created_at\";\n"
 	if result.Up != wantUp || result.Down != wantDown {
 		t.Fatalf("unexpected migration\nup:\n%s\ndown:\n%s", result.Up, result.Down)
+	}
+}
+
+func TestRenderMigrationRejectsMalformedPlan(t *testing.T) {
+	t.Parallel()
+	plan := migration.Plan{Operations: []migration.Operation{{Kind: migration.CreateTable, Table: "users"}}}
+	if _, err := RenderMigration(plan); err == nil {
+		t.Fatal("expected invalid plan error")
 	}
 }
