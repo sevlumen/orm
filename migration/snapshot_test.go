@@ -11,7 +11,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	snapshot, err := NewSnapshot(schema.Schema{Tables: []schema.Table{{
-		Name: "users",
+		Name:    "users",
 		Columns: []schema.Column{{Name: "id", Type: "uuid", PrimaryKey: true}},
 	}}})
 	if err != nil {
