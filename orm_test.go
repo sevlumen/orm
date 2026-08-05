@@ -19,6 +19,8 @@ type User struct {
 func (User) TableName() string { return "users" }
 
 func TestPostgreSQLSchema(t *testing.T) {
+	t.Parallel()
+
 	got, err := orm.PostgreSQLSchema(User{})
 	if err != nil {
 		t.Fatalf("PostgreSQLSchema() error = %v", err)
@@ -39,6 +41,8 @@ func TestPostgreSQLSchema(t *testing.T) {
 }
 
 func TestUnsupportedType(t *testing.T) {
+	t.Parallel()
+
 	type Invalid struct {
 		Metadata map[string]string
 	}
