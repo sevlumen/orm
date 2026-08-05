@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -57,7 +58,7 @@ func TestBuildIsDeterministic(t *testing.T) {
 
 func TestValidateIDRejectsTraversal(t *testing.T) {
 	t.Parallel()
-	invalid := []string{"../escape", "20260805210000_../escape", "20260805210000_CreateUsers", "create_users", "20261301210000_invalid_month"}
+	invalid := []string{"../escape", "20260805210000_../escape", "20260805210000_CreateUsers", "create_users", "20261301210000_invalid_month", "20260805210000_" + strings.Repeat("a", maxMigrationIDLength)}
 	for _, id := range invalid {
 		if err := ValidateID(id); err == nil {
 			t.Fatalf("ValidateID(%q) unexpectedly succeeded", id)
@@ -196,5 +197,55 @@ func TestListRequiresRoot(t *testing.T) {
 	t.Parallel()
 	if _, err := List(""); err == nil {
 		t.Fatal("expected empty root error")
+	}
+}
+
+func TestArtifactRejectsOversizedSQL(t *testing.T) {
+	t.Parallel()
+	value := testArtifact(t, "20260805210000_create_users")
+	value.UpSQL = bytes.Repeat([]byte{'x'}, maxSQLSize+1)
+	value.Manifest.Files.UpSQL = digest(value.UpSQL)
+	if err := value.Validate(); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected size error, got %v", err)
+	}
+}
+
+func TestLoadRejectsSymlinkPayload(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated Windows privileges")
+	}
+	root := t.TempDir()
+	value := testArtifact(t, "20260805210000_create_users")
+	path, err := Write(root, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "external.sql")
+	if err := os.WriteFile(target, value.UpSQL, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload := filepath.Join(path, UpFile)
+	if err := os.Remove(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root, value.Manifest.ID); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestParseManifestRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+	value := testArtifact(t, "20260805210000_create_users")
+	manifest, err := value.MarshalManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest = bytes.Replace(manifest, []byte("{\n"), []byte("{\n  \"unknown\": true,\n"), 1)
+	if _, err := ParseManifest(manifest); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("expected unknown field error, got %v", err)
 	}
 }
