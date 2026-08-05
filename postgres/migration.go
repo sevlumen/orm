@@ -18,6 +18,9 @@ type MigrationSQL struct {
 
 // RenderMigration renders PostgreSQL up/down SQL for a migration plan.
 func RenderMigration(plan migration.Plan) (MigrationSQL, error) {
+	if err := plan.Validate(); err != nil {
+		return MigrationSQL{}, fmt.Errorf("postgres: invalid migration plan: %w", err)
+	}
 	up, err := renderOperations(plan.Operations, false)
 	if err != nil {
 		return MigrationSQL{}, err
