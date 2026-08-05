@@ -20,6 +20,8 @@ const (
 	// FormatVersion is the current on-disk migration artifact format.
 	FormatVersion = 1
 
+	maxMigrationIDLength = 128
+
 	ManifestFile = "manifest.json"
 	UpFile       = "up.sql"
 	DownFile     = "down.sql"
@@ -98,6 +100,9 @@ func Build(id string, generated postgres.MigrationSQL, next migration.Snapshot) 
 
 // ValidateID validates the portable, sortable migration ID format.
 func ValidateID(id string) error {
+	if len(id) > maxMigrationIDLength {
+		return fmt.Errorf("artifact: migration ID exceeds %d bytes", maxMigrationIDLength)
+	}
 	if !migrationIDPattern.MatchString(id) {
 		return fmt.Errorf("artifact: migration ID %q must match YYYYMMDDHHMMSS_lower_snake_case", id)
 	}
@@ -115,8 +120,17 @@ func (a Artifact) Validate() error {
 	if len(a.UpSQL) == 0 {
 		return fmt.Errorf("artifact: %s is empty", UpFile)
 	}
+	if len(a.UpSQL) > maxSQLSize {
+		return fmt.Errorf("artifact: %s exceeds %d bytes", UpFile, maxSQLSize)
+	}
 	if len(a.DownSQL) == 0 {
 		return fmt.Errorf("artifact: %s is empty", DownFile)
+	}
+	if len(a.DownSQL) > maxSQLSize {
+		return fmt.Errorf("artifact: %s exceeds %d bytes", DownFile, maxSQLSize)
+	}
+	if len(a.SnapshotJSON) > maxSnapshotSize {
+		return fmt.Errorf("artifact: %s exceeds %d bytes", SnapshotFile, maxSnapshotSize)
 	}
 	if _, err := migration.ParseSnapshot(a.SnapshotJSON); err != nil {
 		return fmt.Errorf("artifact: invalid %s: %w", SnapshotFile, err)
@@ -177,7 +191,11 @@ func (a Artifact) MarshalManifest() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("artifact: marshal manifest: %w", err)
 	}
-	return append(data, '\n'), nil
+	data = append(data, '\n')
+	if len(data) > maxManifestSize {
+		return nil, fmt.Errorf("artifact: %s exceeds %d bytes", ManifestFile, maxManifestSize)
+	}
+	return data, nil
 }
 
 // ParseManifest strictly parses a manifest and rejects trailing or unknown data.
