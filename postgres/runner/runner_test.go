@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/migration"
 	"github.com/sevlumen/orm/migration/artifact"
@@ -298,9 +299,11 @@ func cleanupIntegrationObjects(t *testing.T, pool *pgxpool.Pool, table, history 
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := pool.Exec(ctx, `DROP TABLE IF EXISTS public.`+table+`; DROP TABLE IF EXISTS public.`+history+`;`)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		t.Logf("cleanup failed: %v", err)
+	for _, name := range []string{table, history} {
+		query := "DROP TABLE IF EXISTS " + pgx.Identifier{"public", name}.Sanitize()
+		if _, err := pool.Exec(ctx, query); err != nil && !errors.Is(err, context.Canceled) {
+			t.Logf("cleanup %s failed: %v", name, err)
+		}
 	}
 }
 
