@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.22.x", "stable"]
+        go: ["1.25.x", "stable"]
 
     steps:
       - name: Check out repository
@@ -26,6 +26,14 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache: false
+
+      - name: Resolve dependencies
+        run: go mod tidy
+
+      - name: Print dependency checksums
+        if: matrix.go == '1.25.x'
+        shell: bash
+        run: base64 -w0 go.sum && echo
 
       - name: Verify formatting
         shell: bash
@@ -42,3 +50,45 @@ jobs:
 
       - name: Test with race detector
         run: go test -race ./... -count=1
+
+  postgres:
+    name: PostgreSQL ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["14", "18"]
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sevlumen_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sevlumen_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      SEVLUMEN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/sevlumen_test?sslmode=disable
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Resolve dependencies
+        run: go mod tidy
+
+      - name: Run PostgreSQL integration tests
+        run: go test -race ./postgres/runner -count=1
