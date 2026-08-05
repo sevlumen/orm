@@ -10,6 +10,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sevlumen/orm/migration"
 	"github.com/sevlumen/orm/postgres"
@@ -99,6 +100,9 @@ func Build(id string, generated postgres.MigrationSQL, next migration.Snapshot) 
 func ValidateID(id string) error {
 	if !migrationIDPattern.MatchString(id) {
 		return fmt.Errorf("artifact: migration ID %q must match YYYYMMDDHHMMSS_lower_snake_case", id)
+	}
+	if _, err := time.Parse("20060102150405", id[:14]); err != nil {
+		return fmt.Errorf("artifact: migration ID %q has an invalid timestamp: %w", id, err)
 	}
 	return nil
 }
