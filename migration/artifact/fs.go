@@ -51,20 +51,6 @@ func (w filesystemWriter) write(root string, artifact Artifact) (string, error) 
 		return "", fmt.Errorf("artifact: create root: %w", err)
 	}
 
-	lockPath := filepath.Join(root, "."+artifact.Manifest.ID+".lock")
-	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return "", fmt.Errorf("artifact: migration %q is being written by another process", artifact.Manifest.ID)
-		}
-		return "", fmt.Errorf("artifact: create migration lock: %w", err)
-	}
-	if err := lock.Close(); err != nil {
-		_ = os.Remove(lockPath)
-		return "", fmt.Errorf("artifact: close migration lock: %w", err)
-	}
-	defer func() { _ = os.Remove(lockPath) }()
-
 	target := filepath.Join(root, artifact.Manifest.ID)
 	if _, err := os.Lstat(target); err == nil {
 		return "", fmt.Errorf("artifact: migration %q already exists", artifact.Manifest.ID)
@@ -110,9 +96,6 @@ func (w filesystemWriter) write(root string, artifact Artifact) (string, error) 
 		return "", fmt.Errorf("artifact: publish migration: %w", err)
 	}
 	published = true
-	if err := syncDirectory(root); err != nil {
-		return "", fmt.Errorf("artifact: sync migration root: %w", err)
-	}
 	return target, nil
 }
 
@@ -158,6 +141,9 @@ func Load(root, id string) (Artifact, error) {
 
 // List returns sorted migration IDs and rejects unexpected non-hidden entries.
 func List(root string) ([]string, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, fmt.Errorf("artifact: root directory is required")
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
