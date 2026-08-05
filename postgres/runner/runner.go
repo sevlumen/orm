@@ -160,6 +160,18 @@ func (r *Runner) Apply(ctx context.Context) ([]Result, error) {
 		if err != nil {
 			return results, &MigrationError{ID: status.ID, Direction: "up", Stage: "load", Err: err}
 		}
+		checksum, err := value.Checksum()
+		if err != nil {
+			return results, &MigrationError{ID: status.ID, Direction: "up", Stage: "checksum", Err: err}
+		}
+		if checksum != status.Checksum {
+			return results, &MigrationError{
+				ID:        status.ID,
+				Direction: "up",
+				Stage:     "preflight",
+				Err:       fmt.Errorf("artifact changed after preflight: before=%s after=%s", status.Checksum, checksum),
+			}
+		}
 		result, err := r.applyOne(ctx, conn, value)
 		if err != nil {
 			return results, err
