@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sevlumen/orm/migration"
@@ -56,7 +57,7 @@ func TestBuildIsDeterministic(t *testing.T) {
 
 func TestValidateIDRejectsTraversal(t *testing.T) {
 	t.Parallel()
-	invalid := []string{"../escape", "20260805210000_../escape", "20260805210000_CreateUsers", "create_users"}
+	invalid := []string{"../escape", "20260805210000_../escape", "20260805210000_CreateUsers", "create_users", "20261301210000_invalid_month"}
 	for _, id := range invalid {
 		if err := ValidateID(id); err == nil {
 			t.Fatalf("ValidateID(%q) unexpectedly succeeded", id)
@@ -155,5 +156,45 @@ func TestWriterCleansPartialFilesAfterFailure(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("partial entries remain: %v", entries)
+	}
+}
+
+func TestConcurrentWritersDoNotOverwrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	value := testArtifact(t, "20260805210000_create_users")
+	results := make(chan error, 2)
+	var start sync.WaitGroup
+	start.Add(1)
+	for range 2 {
+		go func() {
+			start.Wait()
+			_, err := Write(root, value)
+			results <- err
+		}()
+	}
+	start.Done()
+
+	successes := 0
+	failures := 0
+	for range 2 {
+		if err := <-results; err != nil {
+			failures++
+		} else {
+			successes++
+		}
+	}
+	if successes != 1 || failures != 1 {
+		t.Fatalf("successes = %d, failures = %d", successes, failures)
+	}
+	if _, err := Load(root, value.Manifest.ID); err != nil {
+		t.Fatalf("published artifact is invalid: %v", err)
+	}
+}
+
+func TestListRequiresRoot(t *testing.T) {
+	t.Parallel()
+	if _, err := List(""); err == nil {
+		t.Fatal("expected empty root error")
 	}
 }
