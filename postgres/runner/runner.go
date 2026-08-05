@@ -357,7 +357,7 @@ func (r *Runner) applyOne(ctx context.Context, conn *pgxpool.Conn, value artifac
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "execute", Err: err}
 	}
 	duration := nonNegativeDuration(r.now().Sub(started))
-	if _, err := tx.Exec(ctx, `INSERT INTO `+r.historySQL+` (migration_id, checksum, applied_at, execution_time_ms) VALUES ($1, $2, $3, $4)`, id, checksum, r.now().UTC(), duration.Milliseconds()); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO `+r.historySQL+` (migration_id, checksum, applied_at, execution_time_ms) VALUES ($1, $2, clock_timestamp(), $3)`, id, checksum, duration.Milliseconds()); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "history", Err: err}
 	}
 	if err := tx.Commit(ctx); err != nil {
