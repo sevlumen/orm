@@ -2,6 +2,7 @@ package migration
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sevlumen/orm/schema"
 )
@@ -40,6 +41,9 @@ func diffNativeObjects(before, after schema.Schema) ([]Operation, []Operation, e
 			copy := cloneEnum(newValue)
 			beforeTables = append(beforeTables, Operation{Kind: CreateEnum, AfterEnum: &copy})
 		case oldOK && !newOK:
+			if enumUsedBySchema(after, name) {
+				return nil, nil, fmt.Errorf("migration: cannot remove enum %q while an after-schema column still uses it", name)
+			}
 			copy := cloneEnum(old)
 			afterTables = append(afterTables, Operation{
 				Kind:       DropEnum,
@@ -50,6 +54,22 @@ func diffNativeObjects(before, after schema.Schema) ([]Operation, []Operation, e
 		}
 	}
 	return beforeTables, afterTables, nil
+}
+
+func enumUsedBySchema(model schema.Schema, name string) bool {
+	for _, table := range model.Tables {
+		for _, column := range table.Columns {
+			columnType := strings.TrimSpace(column.Type)
+			if columnType == name || columnType == quoteTypeName(name) || columnType == name+"[]" || columnType == quoteTypeName(name)+"[]" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func quoteTypeName(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func extensionMap(model schema.Schema) map[string]schema.Extension {
