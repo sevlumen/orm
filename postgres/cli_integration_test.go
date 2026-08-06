@@ -70,7 +70,7 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 		}
 
 		exit, _, stderr = runCLI(ctx, connectionString, "apply", "--config", configPath)
-		if exit != 1 || !strings.Contains(stderr, "exceeds configured maximum") {
+		if exit != 1 || !strings.Contains(stderr, "exceeding configured maximum") {
 			t.Fatalf("safe apply exit=%d stderr=%s", exit, stderr)
 		}
 		var applied int
