@@ -35,7 +35,7 @@ func TestRenderCreateSchemaOrdersAndQuotesNativeObjects(t *testing.T) {
 	extension := strings.Index(sql, `CREATE EXTENSION IF NOT EXISTS "pgcrypto";`)
 	enum := strings.Index(sql, `CREATE TYPE "order_status" AS ENUM ('new', 'customer''s choice');`)
 	table := strings.Index(sql, `CREATE TABLE "orders"`)
-	generated := strings.Index(sql, `"total" integer GENERATED ALWAYS AS (subtotal + tax) STORED NOT NULL`)
+	generated := strings.Index(sql, `"total" integer NOT NULL GENERATED ALWAYS AS (subtotal + tax) STORED`)
 	if extension < 0 || enum < 0 || table < 0 || generated < 0 || !(extension < enum && enum < table) {
 		t.Fatalf("unexpected native SQL:\n%s", sql)
 	}
