@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/sevlumen/orm/migration"
@@ -129,7 +128,8 @@ func (app *App) runDiff(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := artifact.Write(directory, built); err != nil {
+	publishedPath, err := artifact.Write(directory, built)
+	if err != nil {
 		return err
 	}
 	warnings := append([]string(nil), rendered.Warnings...)
@@ -138,7 +138,7 @@ func (app *App) runDiff(_ context.Context, args []string) error {
 	}
 	result := diffResult{
 		ID:         id,
-		Path:       filepath.Join(directory, id),
+		Path:       publishedPath,
 		Risk:       rendered.Risk.String(),
 		Operations: len(plan.Operations),
 		Warnings:   warnings,
