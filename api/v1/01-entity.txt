@@ -1,0 +1,64 @@
+package github.com/sevlumen/orm/entity
+
+func (b *ForeignKeyBuilder) Deferrable() *ForeignKeyBuilder
+
+func (b *ForeignKeyBuilder) InitiallyDeferred() *ForeignKeyBuilder
+
+func (b *ForeignKeyBuilder) OnDelete(action schema.ReferentialAction) *ForeignKeyBuilder
+
+func (b *ForeignKeyBuilder) OnUpdate(action schema.ReferentialAction) *ForeignKeyBuilder
+
+func (b *ForeignKeyBuilder) References(table string, columns ...string) *ForeignKeyBuilder
+
+func (b *IndexBuilder) Include(fields ...string) *IndexBuilder
+
+func (b *IndexBuilder) Unique() *IndexBuilder
+
+func (b *IndexBuilder) Using(method string) *IndexBuilder
+
+func (b *IndexBuilder) Where(predicate string) *IndexBuilder
+
+func (b *SchemaBuilder) Enum(name string, values ...string)
+
+func (b *SchemaBuilder) Extension(name string)
+
+func (b *TableBuilder) Check(name, expression string)
+
+func (b *TableBuilder) ExpressionIndex(name, expression string) *IndexBuilder
+
+func (b *TableBuilder) ForeignKey(name string, fields ...string) *ForeignKeyBuilder
+
+func (b *TableBuilder) Index(name string, fields ...string) *IndexBuilder
+
+func (b *TableBuilder) PrimaryKey(name string, fields ...string)
+
+func (b *TableBuilder) Unique(name string, fields ...string)
+
+func Parse(entities ...any) (schema.Schema, error)
+
+func ParseWithSchema(configure func(*SchemaBuilder), entities ...any) (result schema.Schema, err error)
+
+type Configurer interface {
+	ConfigureORM(*TableBuilder)
+}
+
+type ForeignKeyBuilder struct {
+	// contains filtered or unexported fields
+}
+
+type IndexBuilder struct {
+	// contains filtered or unexported fields
+}
+
+type SchemaBuilder struct {
+	// contains filtered or unexported fields
+}
+
+type TableBuilder struct {
+	// contains filtered or unexported fields
+}
+
+type TableNamer interface {
+	TableName() string
+}
+
