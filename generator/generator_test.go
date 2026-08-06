@@ -123,9 +123,9 @@ type User struct { Base }
 			want: "embedded field",
 		},
 		{
-			name: "duplicate columns",
+			name:   "duplicate columns",
 			source: "package sample\n\ntype User struct {\n A string `orm:\"column:value\"`\n B string `orm:\"column:value\"`\n}\n",
-			want: "duplicates field",
+			want:   "duplicates field",
 		},
 		{
 			name: "dynamic table name",
@@ -137,14 +137,14 @@ func (User) TableName() string { name := "users"; return name }
 			want: "string literal",
 		},
 		{
-			name: "unexported tagged field",
+			name:   "unexported tagged field",
 			source: "package sample\n\ntype User struct { secret string `orm:\"column:secret\"` }\n",
-			want: "unexported field",
+			want:   "unexported field",
 		},
 		{
-			name: "capability conflict",
+			name:   "capability conflict",
 			source: "package sample\n\ntype User struct { ID int64 `orm:\"insertOnly;updateOnly\"` }\n",
-			want: "cannot be combined",
+			want:   "cannot be combined",
 		},
 	}
 	for _, test := range tests {
