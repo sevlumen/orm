@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 )
@@ -16,17 +15,9 @@ func loadConfig(path string) (Config, error) {
 	if path == "" {
 		return config, nil
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("open config: %w", err)
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maximumConfigBytes+1))
+	data, err := readLimited(path, maximumConfigBytes)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
-	}
-	if len(data) > maximumConfigBytes {
-		return Config{}, fmt.Errorf("config exceeds %d bytes", maximumConfigBytes)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
