@@ -92,7 +92,7 @@ func TestTarMetadataIsNormalized(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if header.ModTime != timestamp || header.Uid != 0 || header.Gid != 0 || header.Uname != "" || header.Gname != "" {
+		if !header.ModTime.Equal(timestamp) || header.Uid != 0 || header.Gid != 0 || header.Uname != "" || header.Gname != "" {
 			t.Fatalf("non-normalized tar header: %#v", header)
 		}
 	}
