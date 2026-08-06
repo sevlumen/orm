@@ -46,7 +46,7 @@ Every command accepts `--config <path>`. Version 1 uses strict JSON; unknown fie
 
 Command flags override configuration values. Database credentials should remain in the environment named by `databaseEnv`; do not commit them to the config file. `--database-url` exists for automation that already protects process arguments and logs, but the environment form is preferred.
 
-Configuration files are limited to 1 MiB. Snapshot inputs are limited to 16 MiB. Config, snapshot, artifact, and rename files use strict decoders and reject trailing JSON values.
+Configuration files are limited to 1 MiB. Snapshot inputs are limited to 16 MiB. Config, snapshot, artifact, and rename files must be stable regular files. Symbolic links are rejected, decoders are strict, and trailing or unknown JSON values fail closed.
 
 ## Generate typed metadata
 
@@ -88,13 +88,13 @@ This keeps entity construction, build tags, and application configuration under 
 orm diff \
   --config orm.json \
   --after schema.snapshot.json \
-  --id 202608060930_add_orders \
+  --id 20260806093000_add_orders \
   --max-risk review
 ```
 
 Without `--before`, `diff` uses the snapshot from the latest local migration artifact or an empty snapshot when no artifact exists. An explicit `--before` must match the latest local snapshot; divergent local histories are rejected.
 
-Migration IDs must sort lexicographically after the latest local ID. The command refuses no-op migrations and risk above `--max-risk` or `migrations.maximumRisk`.
+Migration IDs use `YYYYMMDDHHMMSS_lower_snake_case` and must sort lexicographically after the latest local ID. The command refuses no-op migrations and risk above `--max-risk` or `migrations.maximumRisk`.
 
 Generated artifacts contain:
 
@@ -121,7 +121,7 @@ Provide a strict versioned rename file:
 
 ```text
 orm diff --after schema.snapshot.json \
-  --id 202608061000_rename_accounts \
+  --id 20260806100000_rename_accounts \
   --renames renames.json \
   --max-risk review
 ```
@@ -195,9 +195,19 @@ orm status --config orm.json --timeout 30s
 
 The binary converts SIGINT and SIGTERM into context cancellation. Advisory-lock waits, PostgreSQL calls, and transaction operations receive the same bounded context. The runner still uses its independent rollback cleanup context when a transaction must be aborted.
 
+## SQL-injection boundary
+
+The typed query and mutation APIs parameterize application values as PostgreSQL positional arguments. Values containing quotes, comments, semicolons, boolean tautologies, `UNION`, or stacked-statement text remain data and do not change the generated SQL statement shape. PostgreSQL integration tests execute an attack corpus and verify that sentinel tables remain intact.
+
+Table and column names come from validated/generated metadata and are rendered as PostgreSQL identifiers. Never derive identifiers from HTTP parameters, form fields, headers, message payloads, or other untrusted runtime data.
+
+Raw SQL, schema type overrides, default/check expressions, and migration `up.sql`/`down.sql` are explicitly trusted developer-authored inputs. Parameterization cannot make arbitrary SQL text safe. Do not concatenate request data into those surfaces. Migration artifacts are protected by strict manifests, regular-file checks, SHA-256 checksums, risk gates, review, advisory locking, and transactions, but those controls do not turn untrusted SQL into trusted SQL.
+
+The security guarantee therefore applies to the typed value APIs and validated/generated identifier paths. Deliberately trusted SQL escape hatches remain outside that guarantee and must never receive untrusted data.
+
 ## Secret handling
 
 - Prefer `databaseEnv` over `--database-url`.
-- Database URLs and extracted passwords are replaced with `[REDACTED]` in CLI errors.
+- Database URLs and extracted passwords are replaced with `[REDACTED]` in CLI errors, including URL-encoded credentials.
 - JSON success output never contains database connection details.
 - PostgreSQL and migration errors may still contain schema names, SQL, or database values supplied by the server. Apply the application's normal log redaction policy when retaining stderr from automated jobs.
