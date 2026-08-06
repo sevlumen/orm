@@ -1,211 +1,229 @@
 # Sevlumen ORM
 
-PostgreSQL-first, entity-driven ORM and migration tooling for Go.
+PostgreSQL-first, entity-driven ORM, code generator, and migration tooling for Go.
 
-> Development preview. The project currently provides validated Go entities, deterministic PostgreSQL DDL, versioned schema snapshots, risk-aware diffs, checksummed migration artifacts, and a transactional PostgreSQL migration runner. The typed ORM query runtime is still under development.
+> Release-candidate hardening. The typed runtime, generated metadata, migration system, CLI, security tests, fuzzing, vulnerability scanning, and compatibility gates are implemented. Reproducible release artifacts and the maintained real-application exercise remain required before `v1.0.0`.
 
 ## Requirements
 
-- Go 1.25 or newer
-- PostgreSQL 14 or newer
+- Go 1.25 or newer.
+- PostgreSQL 14 through 18.
+
+CI tests Go 1.25, the current stable Go release, PostgreSQL 14, and PostgreSQL 18. See [Support policy](SUPPORT.md) and [Compatibility policy](docs/compatibility.md).
 
 ## Install
 
-```bash
+```text
 go get github.com/sevlumen/orm
 ```
 
-## Entity to PostgreSQL SQL
+The repository ships two commands:
+
+```text
+go install github.com/sevlumen/orm/cmd/orm@latest
+go install github.com/sevlumen/orm/cmd/ormgen@latest
+```
+
+Use an immutable release version instead of `@latest` in production automation after `v1.0.0` is published.
+
+## Design contract
+
+Sevlumen ORM is intentionally explicit:
+
+- PostgreSQL and `pgx/v5` first.
+- Generated table/column metadata and direct scanners; no reflection on query hot paths.
+- Immutable typed builders for select, insert, update, delete, upsert, pagination, locking, and `RETURNING`.
+- Explicit transaction and batch APIs.
+- Explicit one/many relation loading with bounded query counts; no lazy loading or hidden N+1 queries.
+- Versioned canonical snapshots and reviewed migration SQL.
+- Checksummed artifacts, advisory locking, transactional apply/rollback, and exact history-prefix validation.
+- Raw SQL escape hatches remain available but are visibly trusted developer input.
+
+## SQL-injection boundary
+
+Typed query and mutation values are PostgreSQL positional parameters. Attack-corpus and fuzz tests verify that quotes, comments, semicolons, tautologies, `UNION`, stacked statements, and delay functions do not alter SQL shape or execute as SQL. Generated/validated identifiers are quoted or rejected fail-closed.
+
+Raw SQL, `TrustedSQL`, migration SQL, type overrides, defaults, checks, generated expressions, and expression indexes are developer-authored SQL. Never concatenate request, message, file, tenant, or other untrusted runtime input into those surfaces.
+
+See [Security policy](SECURITY.md), [Security testing](docs/security-testing.md), and [CLI SQL boundary](docs/cli.md#sql-injection-boundary).
+
+## Entity and schema
 
 ```go
-package main
+package data
 
-import (
-    "fmt"
-    "log"
-    "time"
-
-    orm "github.com/sevlumen/orm"
-)
+import "time"
 
 type User struct {
-    ID          string     `orm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-    Email       string     `orm:"type:varchar(320);notNull;unique"`
-    DisplayName *string    `orm:"column:display_name;type:varchar(200)"`
-    Active      bool       `orm:"notNull;default:true"`
-    CreatedAt   time.Time  `orm:"column:created_at;notNull;default:now()"`
-    DeletedAt   *time.Time `orm:"column:deleted_at"`
+    ID        string    `orm:"type:uuid;primaryKey;default:gen_random_uuid();insertOnly"`
+    Email     string    `orm:"type:varchar(320);notNull;unique"`
+    Active    bool      `orm:"notNull;default:true"`
+    CreatedAt time.Time `orm:"column:created_at;notNull;default:now();readOnly"`
 }
 
 func (User) TableName() string { return "users" }
-
-func main() {
-    sql, err := orm.PostgreSQLSchema(User{})
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Print(sql)
-}
 ```
 
-Output:
+Generate typed metadata and a direct row scanner:
 
-```sql
-CREATE TABLE "users" (
-    "id" uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    "email" varchar(320) NOT NULL UNIQUE,
-    "display_name" varchar(200),
-    "active" boolean NOT NULL DEFAULT true,
-    "created_at" timestamptz NOT NULL DEFAULT now(),
-    "deleted_at" timestamptz
-);
+```text
+orm generate --dir ./internal/data --output orm_gen.go --type User
+orm generate --dir ./internal/data --output orm_gen.go --type User --check
 ```
 
-## Generate and persist a migration
+`--check` fails when generated output is missing or stale. Commit generated code beside the entity source.
 
-Use an empty snapshot for the first migration. The artifact package writes a complete migration directory through a temporary directory and atomic rename, then verifies strict manifests and SHA-256 checksums when loading it.
+Build deterministic PostgreSQL schema SQL:
 
 ```go
-previous := migration.EmptySnapshot()
-
-generated, next, err := orm.PostgreSQLMigration(previous, User{})
-if err != nil {
-    log.Fatal(err)
-}
-
-bundle, err := artifact.Build(
-    "20260805210000_create_users",
-    generated,
-    next,
-)
-if err != nil {
-    log.Fatal(err)
-}
-
-path, err := artifact.Write("migrations", bundle)
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Println(path)
+sql, err := orm.PostgreSQLSchema(User{})
 ```
 
-The generated directory contains:
+Advanced schema configuration supports extensions, enums, composite keys, unique/check/foreign-key constraints, deferrability, ordinary/expression/partial indexes, include columns, and PostgreSQL index methods.
+
+## Typed query and mutation API
+
+Generated metadata exposes a typed table and columns:
+
+```go
+statement, err := query.Select(data.UserORM.Table).
+    Where(data.UserORM.Email.Eq(email)).
+    OrderBy(data.UserORM.ID.Asc()).
+    Limit(1).
+    Build()
+```
+
+The SQL contains placeholders; `email` remains in `statement.Args`.
+
+Execute through one reusable executor:
+
+```go
+executor, err := query.NewExecutor(pool, query.WithObserver(observer))
+user, found, err := query.FetchOptional(ctx, executor,
+    query.Select(data.UserORM.Table).
+        Where(data.UserORM.Email.Eq(email)).
+        Limit(1),
+)
+```
+
+Returning mutation:
+
+```go
+created, err := query.InsertOne(ctx, executor,
+    query.Insert(data.UserORM.Table).
+        Row(
+            data.UserORM.Email.Set(email),
+            data.UserORM.Active.Set(true),
+        ).
+        Returning(),
+)
+```
+
+Transactions, batches, relation loading, observer hooks, and an injection regression example are compile-tested in [the v1 example package](examples/v1/README.md).
+
+## Migration workflow
+
+Export the application snapshot through compiled application code, then create a reviewed artifact:
+
+```text
+orm diff \
+  --config orm.json \
+  --after schema.snapshot.json \
+  --id 20260806093000_add_orders \
+  --max-risk review
+```
+
+Artifacts contain:
 
 ```text
 migrations/
-└── 20260805210000_create_users/
+└── 20260806093000_add_orders/
     ├── manifest.json
     ├── up.sql
     ├── down.sql
     └── snapshot.json
 ```
 
-Migration IDs use `YYYYMMDDHHMMSS_lower_snake_case`. `artifact.Load` verifies the manifest, snapshot, regular-file boundaries, size limits, and checksums. `artifact.List` returns migration IDs in deterministic order.
+Migration IDs use `YYYYMMDDHHMMSS_lower_snake_case`. Artifacts use strict manifests, canonical snapshots, SHA-256 checksums, regular-file and size boundaries, and atomic publication.
 
-## Apply migrations to PostgreSQL
+Validate without connecting to PostgreSQL:
 
-```go
-package main
-
-import (
-    "context"
-    "log"
-
-    "github.com/jackc/pgx/v5/pgxpool"
-    "github.com/sevlumen/orm/migration"
-    "github.com/sevlumen/orm/postgres/runner"
-)
-
-func main() {
-    ctx := context.Background()
-
-    pool, err := pgxpool.New(ctx, "postgres://app:secret@localhost/app")
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer pool.Close()
-
-    migrations, err := runner.New(pool, runner.Config{
-        MigrationsDir: "migrations",
-        MaximumRisk:   migration.RiskReview,
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    status, err := migrations.Status(ctx)
-    if err != nil {
-        log.Fatal(err)
-    }
-    log.Printf("migration status: %#v", status)
-
-    applied, err := migrations.Apply(ctx)
-    if err != nil {
-        log.Fatal(err)
-    }
-    log.Printf("applied: %#v", applied)
-}
+```text
+orm validate --config orm.json
 ```
 
-Runner behavior:
+Inspect and apply:
 
-- acquires one PostgreSQL connection and a session-level advisory lock for the complete operation;
-- creates the configurable migration history table when status, apply, or rollback is first used;
-- verifies that applied history is an exact prefix of the local artifact sequence;
-- rejects edited or missing applied migrations through complete artifact checksums;
-- preflights every pending migration against `MaximumRisk` before applying the first one;
-- executes each migration and its history mutation in one transaction;
-- rolls back the latest applied migrations in reverse order;
-- rejects transaction-control statements and `COPY` scripts because the runner owns transaction boundaries and does not provide an external COPY data stream.
+```text
+orm status --config orm.json --json
+orm apply --config orm.json
+orm apply --config orm.json --max-risk review
+orm apply --config orm.json --max-risk destructive --yes
+```
 
-`MaximumRisk` defaults to `safe`. Set it explicitly to `review` or `destructive` only after reviewing the generated SQL. Generated rollback SQL can restore schema shape but cannot restore data removed by destructive migrations.
+Every rollback requires confirmation:
 
-## Migration risk levels
+```text
+orm rollback --config orm.json --steps 1 --yes
+```
 
-- `safe`: straightforward additive changes;
-- `review`: changes that can fail depending on existing data, such as `SET NOT NULL`, type conversions, or constrained-column additions;
-- `destructive`: dropping a table or column.
+Each artifact executes in its own PostgreSQL transaction. The runner holds one advisory lock for the operation, preflights all pending risk before applying the first migration, and verifies applied history is the exact prefix of local artifacts.
 
-Column/table renames and primary-key or unique-constraint changes are intentionally not guessed. Write an explicit migration for operations where intent cannot be inferred safely.
+Generated rollback SQL can restore reversible schema shape. It cannot reconstruct values deleted by destructive migrations. Follow the [Recovery runbook](docs/recovery.md).
 
-## Entity tags
+## Risk levels
 
-| Tag | Meaning |
-|---|---|
-| `column:name` | Override the inferred snake_case column name |
-| `type:sql_type` | Override the inferred PostgreSQL type |
-| `primaryKey` | Mark the column as the primary key |
-| `unique` | Add a unique constraint |
-| `notNull` | Force `NOT NULL` |
-| `nullable` | Allow `NULL` for a non-pointer field |
-| `default:expression` | Add a PostgreSQL default expression |
-| `-` | Ignore the field |
+- `safe`: straightforward additive operations.
+- `review`: operations dependent on existing data, locking, rewriting, or compatibility.
+- `destructive`: operations such as dropping a table or column.
 
-Pointers are nullable by default. Non-pointer fields are non-nullable. Supported inferred types currently include strings, booleans, signed integers, floats, `[]byte`, and `time.Time`. Custom Go types can use an explicit `type:` tag.
+Risk flags are gates, not approvals. Review SQL, application compatibility, lock impact, backups, and recovery before production execution.
 
-SQL types, default expressions, and migration SQL are trusted developer-authored inputs. Never construct them from request data or other untrusted input.
+## CLI configuration and automation
 
-## Road to v1.0
+The CLI accepts strict versioned JSON configuration. Flags override config. Automation should use `--json` and the versioned envelope rather than parse human output.
 
-Before a production-ready v1.0 release, the project still needs:
+Database URLs and decoded/query-encoded/path-encoded passwords are redacted from CLI error output. Prefer an environment variable over `--database-url`, because operating systems may expose process arguments before application redaction.
 
-1. indexes, foreign keys, composite keys, checks, enums, and PostgreSQL-specific schema features;
-2. generated typed CRUD/query APIs on top of `pgx`;
-3. stable CLI commands for generate, diff, validate, apply, rollback, and status;
-4. observability hooks, fuzzing, vulnerability scanning, release automation, and compatibility policy;
-5. release-candidate validation in a real application.
+See [CLI reference](docs/cli.md).
+
+## Observability and performance
+
+Observer hooks expose operation name, parameterized SQL, timing, affected rows, and structured errors without a mandatory logging/tracing dependency. Query arguments are intentionally absent. See [Observability and redaction](docs/observability.md).
+
+Benchmarks compare builder/scanner overhead and end-to-end typed execution with direct `pgx`. CI enforces allocation budgets and runs fixed-iteration smoke benchmarks without claiming noisy hosted-runner latency ratios. See [Benchmark methodology](docs/benchmarks.md).
+
+## Compatibility and operations
+
+- [Compatibility policy](docs/compatibility.md)
+- [Upgrade guide](docs/upgrade.md)
+- [Recovery runbook](docs/recovery.md)
+- [Support policy](SUPPORT.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 
 ## Development
 
-```bash
-gofmt -w .
+```text
 go mod tidy
 git diff --exit-code -- go.mod go.sum
+go mod verify
+gofmt -w .
 go vet ./...
-go test -race ./...
+go test -race ./... -count=1
+go run ./cmd/doccheck
 ```
 
-CI tests Go 1.25 and the current stable Go release, plus PostgreSQL 14 and 18 integration matrices.
+PostgreSQL integration tests:
+
+```text
+SEVLUMEN_TEST_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/sevlumen_test?sslmode=disable' \
+go test -race ./postgres/... -count=1
+```
+
+Security CI also runs vulnerability analysis, deterministic fuzz smoke, immutable dependency checks, and the reviewed public API baseline under `api/v1/`.
 
 ## License
 
