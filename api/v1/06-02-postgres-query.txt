@@ -1,0 +1,93 @@
+func NewColumn[T, V any](table *Table[T], name string, options ...ColumnOptions) (Column[T, V], error)
+
+func NewExecutor(db DB, options ...ExecutorOption) (*Executor, error)
+
+func NewManyRelation[S any, T any, K comparable](
+	name string,
+	sourceKey KeyFunc[S, K],
+	targetKey KeyFunc[T, K],
+	query RelationQuery[T, K],
+	options ...RelationOption,
+) (ManyRelation[S, T, K], error)
+
+func NewOneRelation[S any, T any, K comparable](
+	name string,
+	sourceKey KeyFunc[S, K],
+	targetKey KeyFunc[T, K],
+	query RelationQuery[T, K],
+	options ...RelationOption,
+) (OneRelation[S, T, K], error)
+
+func NewTable[T any](name string, selectColumns []string, scan ScanFunc[T]) (*Table[T], error)
+
+func Not[T any](predicate Predicate[T]) Predicate[T]
+
+func Or[T any](predicates ...Predicate[T]) Predicate[T]
+
+func QueueDelete[T any](batch Batch, builder DeleteBuilder[T]) Batch
+
+func QueueInsert[T any](batch Batch, builder InsertBuilder[T]) Batch
+
+func QueueUpdate[T any](batch Batch, builder UpdateBuilder[T]) Batch
+
+func ReadOnlyColumn() ColumnOptions
+
+func RequiredKey[T any, K comparable](extract func(T) K) KeyFunc[T, K]
+
+func SelectRelationByColumn[T any, K comparable](base SelectBuilder[T], column Column[T, K]) RelationQuery[T, K]
+
+func Select[T any](table *Table[T]) SelectBuilder[T]
+
+func TrustedPredicate[T any](table *Table[T], expression TrustedSQL) Predicate[T]
+
+func UpdateAll[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) ([]T, error)
+
+func UpdateOne[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) (T, error)
+
+func UpdateOnlyColumn() ColumnOptions
+
+func Update[T any](table *Table[T]) UpdateBuilder[T]
+
+func WithObserver(observer Observer) ExecutorOption
+
+func WithRelationChunkSize(size int) RelationOption
+
+type Assignment[T any] struct {
+	// contains filtered or unexported fields
+}
+
+type Batch struct {
+	// contains filtered or unexported fields
+}
+
+type BatchSender interface {
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}
+
+type Beginner interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}
+
+type ColumnOptions struct {
+	Insertable bool
+	Updatable  bool
+}
+
+type Column[T, V any] struct {
+	// contains filtered or unexported fields
+}
+
+type ConflictColumn[T any] struct {
+	// contains filtered or unexported fields
+}
+
+type DB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type DeleteBuilder[T any] struct {
+	// contains filtered or unexported fields
+}
+
