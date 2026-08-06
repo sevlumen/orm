@@ -217,6 +217,9 @@ func inferPostgresType(t reflect.Type) (string, error) {
 	case reflect.Float64:
 		return "double precision", nil
 	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return "", fmt.Errorf("unsupported JSONB map key type %s; use a string-keyed map or orm:\"type:...\"", t.Key())
+		}
 		return "jsonb", nil
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
