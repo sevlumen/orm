@@ -27,7 +27,7 @@ func TestCRUDStatementsAreParameterized(t *testing.T) {
 			t.Fatalf("%s has no positional placeholder: %s", name, statement.SQL)
 		}
 	}
-	if !reflect.DeepEqual(insert.Args, []any{int64(1), payload, true}) {
+	if !reflect.DeepEqual(insert.Args, []any{true, payload, int64(1)}) {
 		t.Fatalf("insert args=%#v", insert.Args)
 	}
 	if !reflect.DeepEqual(selectOne.Args, []any{payload, int64(1)}) {
