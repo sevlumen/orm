@@ -106,19 +106,8 @@ jobs:
           go test ./postgres/runner -run '^$' -fuzz '^FuzzValidateMigrationScript$' -fuzztime=2s
           go test ./postgres/runner -run '^$' -fuzz '^FuzzStatementPrefixesBounded$' -fuzztime=2s
 
-      - name: Generate public API baseline candidate
-        run: go run ./cmd/apicheck -write -baseline /tmp/api-v1.txt
-
-      - name: Upload public API baseline candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: api-v1-candidate
-          path: /tmp/api-v1.txt
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Verify public API surface
-        run: go run ./cmd/apicheck -baseline api/v1.txt
+        run: go run ./cmd/apicheck -baseline api/v1
 
   postgres:
     name: PostgreSQL ${{ matrix.version }}
