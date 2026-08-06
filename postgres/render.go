@@ -81,13 +81,13 @@ func renderTable(table schema.Table) (string, error) {
 
 func renderColumn(column schema.Column, inlinePrimaryKey bool) string {
 	parts := []string{quote(column.Name), column.Type}
+	if !column.Nullable {
+		parts = append(parts, "NOT NULL")
+	}
 	if column.Generated != "" {
 		parts = append(parts, "GENERATED ALWAYS AS ("+column.Generated+") STORED")
 	} else if column.Default != "" {
 		parts = append(parts, "DEFAULT", column.Default)
-	}
-	if !column.Nullable {
-		parts = append(parts, "NOT NULL")
 	}
 	if column.Unique {
 		parts = append(parts, "UNIQUE")
