@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -28,8 +29,9 @@ type Event struct {
 	Err          error
 }
 
-// Observer receives best-effort execution events. Observer panics are recovered
-// and ignored so instrumentation cannot change query semantics.
+// Observer receives best-effort execution events. Implementations may be called
+// concurrently. Observer panics are recovered and ignored so instrumentation
+// cannot change query semantics.
 type Observer interface {
 	Before(context.Context, Event)
 	After(context.Context, Event)
@@ -48,7 +50,7 @@ type ExecutorOption func(*Executor) error
 // WithObserver installs optional best-effort execution instrumentation.
 func WithObserver(observer Observer) ExecutorOption {
 	return func(executor *Executor) error {
-		if observer == nil {
+		if isNilInterface(observer) {
 			return fmt.Errorf("query: observer is nil")
 		}
 		executor.observer = observer
@@ -58,7 +60,7 @@ func WithObserver(observer Observer) ExecutorOption {
 
 // NewExecutor validates and creates a reusable executor.
 func NewExecutor(db DB, options ...ExecutorOption) (*Executor, error) {
-	if db == nil {
+	if isNilInterface(db) {
 		return nil, fmt.Errorf("query: executor requires a database")
 	}
 	executor := &Executor{db: db, now: time.Now}
@@ -86,6 +88,11 @@ func (e *ExecutionError) Error() string {
 
 func (e *ExecutionError) Unwrap() error { return e.Err }
 
+// ErrMultipleRows indicates that an exactly-one RETURNING helper received more
+// than one row. The database mutation has already executed; use a transaction
+// when the caller needs this error to roll the mutation back.
+var ErrMultipleRows = errors.New("query: expected exactly one returned row")
+
 // Exec executes a non-returning statement.
 func (e *Executor) Exec(ctx context.Context, operation string, statement Statement) (pgconn.CommandTag, error) {
 	if err := e.validate(operation, statement); err != nil {
@@ -102,41 +109,8 @@ func (e *Executor) Exec(ctx context.Context, operation string, statement Stateme
 
 // FetchAll executes a typed SELECT and scans every row without reflection.
 func FetchAll[T any](ctx context.Context, executor *Executor, builder SelectBuilder[T]) ([]T, error) {
-	if executor == nil {
-		return nil, fmt.Errorf("query: FetchAll requires an executor")
-	}
 	statement, err := builder.Build()
-	if err != nil {
-		return nil, err
-	}
-	if err := executor.validate("select all", statement); err != nil {
-		return nil, err
-	}
-
-	started := executor.start(ctx, "select all", statement.SQL)
-	rows, err := executor.db.Query(ctx, statement.SQL, statement.Args...)
-	if err != nil {
-		executor.finish(ctx, "select all", statement.SQL, started, 0, err)
-		return nil, executionError("select all", statement.SQL, err)
-	}
-	defer rows.Close()
-
-	result := make([]T, 0)
-	for rows.Next() {
-		value, scanErr := builder.table.Scan(rows)
-		if scanErr != nil {
-			rows.Close()
-			executor.finish(ctx, "select all", statement.SQL, started, int64(len(result)), scanErr)
-			return nil, executionError("select all scan", statement.SQL, scanErr)
-		}
-		result = append(result, value)
-	}
-	if err := rows.Err(); err != nil {
-		executor.finish(ctx, "select all", statement.SQL, started, int64(len(result)), err)
-		return nil, executionError("select all rows", statement.SQL, err)
-	}
-	executor.finish(ctx, "select all", statement.SQL, started, int64(len(result)), nil)
-	return result, nil
+	return scanAll(ctx, executor, "select all", builder.table, statement, err)
 }
 
 // FetchOne executes a typed SELECT with LIMIT 1 and requires one row.
@@ -163,6 +137,9 @@ func fetchOne[T any](ctx context.Context, executor *Executor, builder SelectBuil
 	if err := executor.validate(operation, statement); err != nil {
 		return zero, false, err
 	}
+	if builder.table == nil {
+		return zero, false, fmt.Errorf("query: %s requires table metadata", operation)
+	}
 
 	started := executor.start(ctx, operation, statement.SQL)
 	value, err := builder.table.Scan(executor.db.QueryRow(ctx, statement.SQL, statement.Args...))
@@ -178,22 +155,96 @@ func fetchOne[T any](ctx context.Context, executor *Executor, builder SelectBuil
 	return value, true, nil
 }
 
-// InsertOne executes INSERT ... RETURNING and scans one row.
+// InsertOne executes a single-row INSERT ... RETURNING and requires exactly one row.
 func InsertOne[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) (T, error) {
-	return returningOne(ctx, executor, "insert returning", builder.table, builder.Returning().Build())
+	var zero T
+	if len(builder.rows) != 1 {
+		return zero, fmt.Errorf("query: insert returning one requires exactly one input row")
+	}
+	statement, err := builder.Returning().Build()
+	return returningExactlyOne(ctx, executor, "insert returning one", builder.table, statement, err)
 }
 
-// UpdateOne executes UPDATE ... RETURNING and scans one row.
+// InsertAll executes INSERT ... RETURNING and scans every returned row.
+func InsertAll[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) ([]T, error) {
+	statement, err := builder.Returning().Build()
+	return scanAll(ctx, executor, "insert returning all", builder.table, statement, err)
+}
+
+// UpdateOne executes UPDATE ... RETURNING and requires exactly one returned row.
 func UpdateOne[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) (T, error) {
-	return returningOne(ctx, executor, "update returning", builder.table, builder.Returning().Build())
+	statement, err := builder.Returning().Build()
+	return returningExactlyOne(ctx, executor, "update returning one", builder.table, statement, err)
 }
 
-// DeleteOne executes DELETE ... RETURNING and scans one row.
+// UpdateAll executes UPDATE ... RETURNING and scans every returned row.
+func UpdateAll[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) ([]T, error) {
+	statement, err := builder.Returning().Build()
+	return scanAll(ctx, executor, "update returning all", builder.table, statement, err)
+}
+
+// DeleteOne executes DELETE ... RETURNING and requires exactly one returned row.
 func DeleteOne[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) (T, error) {
-	return returningOne(ctx, executor, "delete returning", builder.table, builder.Returning().Build())
+	statement, err := builder.Returning().Build()
+	return returningExactlyOne(ctx, executor, "delete returning one", builder.table, statement, err)
 }
 
-func returningOne[T any](ctx context.Context, executor *Executor, operation string, table *Table[T], statement Statement, buildErr error) (T, error) {
+// DeleteAll executes DELETE ... RETURNING and scans every returned row.
+func DeleteAll[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) ([]T, error) {
+	statement, err := builder.Returning().Build()
+	return scanAll(ctx, executor, "delete returning all", builder.table, statement, err)
+}
+
+func scanAll[T any](ctx context.Context, executor *Executor, operation string, table *Table[T], statement Statement, buildErr error) ([]T, error) {
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	if executor == nil {
+		return nil, fmt.Errorf("query: %s requires an executor", operation)
+	}
+	if table == nil {
+		return nil, fmt.Errorf("query: %s requires table metadata", operation)
+	}
+	if err := executor.validate(operation, statement); err != nil {
+		return nil, err
+	}
+
+	started := executor.start(ctx, operation, statement.SQL)
+	rows, err := executor.db.Query(ctx, statement.SQL, statement.Args...)
+	if err != nil {
+		if rows != nil {
+			rows.Close()
+		}
+		executor.finish(ctx, operation, statement.SQL, started, 0, err)
+		return nil, executionError(operation, statement.SQL, err)
+	}
+	if rows == nil {
+		err := fmt.Errorf("query: database returned nil rows")
+		executor.finish(ctx, operation, statement.SQL, started, 0, err)
+		return nil, executionError(operation, statement.SQL, err)
+	}
+	defer rows.Close()
+
+	result := make([]T, 0)
+	for rows.Next() {
+		value, scanErr := table.Scan(rows)
+		if scanErr != nil {
+			rows.Close()
+			executor.finish(ctx, operation, statement.SQL, started, int64(len(result)), scanErr)
+			return nil, executionError(operation+" scan", statement.SQL, scanErr)
+		}
+		result = append(result, value)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		executor.finish(ctx, operation, statement.SQL, started, int64(len(result)), err)
+		return nil, executionError(operation+" rows", statement.SQL, err)
+	}
+	executor.finish(ctx, operation, statement.SQL, started, int64(len(result)), nil)
+	return result, nil
+}
+
+func returningExactlyOne[T any](ctx context.Context, executor *Executor, operation string, table *Table[T], statement Statement, buildErr error) (T, error) {
 	var zero T
 	if buildErr != nil {
 		return zero, buildErr
@@ -207,11 +258,47 @@ func returningOne[T any](ctx context.Context, executor *Executor, operation stri
 	if err := executor.validate(operation, statement); err != nil {
 		return zero, err
 	}
+
 	started := executor.start(ctx, operation, statement.SQL)
-	value, err := table.Scan(executor.db.QueryRow(ctx, statement.SQL, statement.Args...))
+	rows, err := executor.db.Query(ctx, statement.SQL, statement.Args...)
 	if err != nil {
+		if rows != nil {
+			rows.Close()
+		}
 		executor.finish(ctx, operation, statement.SQL, started, 0, err)
 		return zero, executionError(operation, statement.SQL, err)
+	}
+	if rows == nil {
+		err := fmt.Errorf("query: database returned nil rows")
+		executor.finish(ctx, operation, statement.SQL, started, 0, err)
+		return zero, executionError(operation, statement.SQL, err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		rows.Close()
+		rowErr := rows.Err()
+		if rowErr == nil {
+			rowErr = pgx.ErrNoRows
+		}
+		executor.finish(ctx, operation, statement.SQL, started, 0, rowErr)
+		return zero, executionError(operation, statement.SQL, rowErr)
+	}
+	value, scanErr := table.Scan(rows)
+	if scanErr != nil {
+		rows.Close()
+		executor.finish(ctx, operation, statement.SQL, started, 0, scanErr)
+		return zero, executionError(operation+" scan", statement.SQL, scanErr)
+	}
+	if rows.Next() {
+		rows.Close()
+		executor.finish(ctx, operation, statement.SQL, started, 2, ErrMultipleRows)
+		return zero, executionError(operation, statement.SQL, ErrMultipleRows)
+	}
+	rows.Close()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		executor.finish(ctx, operation, statement.SQL, started, 1, rowsErr)
+		return zero, executionError(operation+" rows", statement.SQL, rowsErr)
 	}
 	executor.finish(ctx, operation, statement.SQL, started, 1, nil)
 	return value, nil
@@ -245,7 +332,7 @@ func ExecDelete[T any](ctx context.Context, executor *Executor, builder DeleteBu
 }
 
 func (e *Executor) validate(operation string, statement Statement) error {
-	if e == nil || e.db == nil {
+	if e == nil || isNilInterface(e.db) {
 		return fmt.Errorf("query: %s requires a configured executor", operation)
 	}
 	if strings.TrimSpace(operation) == "" {
@@ -282,7 +369,7 @@ func (e *Executor) finish(ctx context.Context, operation, sql string, started ti
 }
 
 func (e *Executor) observeBefore(ctx context.Context, event Event) {
-	if e == nil || e.observer == nil {
+	if e == nil || isNilInterface(e.observer) {
 		return
 	}
 	defer func() { _ = recover() }()
@@ -290,7 +377,7 @@ func (e *Executor) observeBefore(ctx context.Context, event Event) {
 }
 
 func (e *Executor) observeAfter(ctx context.Context, event Event) {
-	if e == nil || e.observer == nil {
+	if e == nil || isNilInterface(e.observer) {
 		return
 	}
 	defer func() { _ = recover() }()
@@ -302,4 +389,17 @@ func nonNegativeDuration(value time.Duration) time.Duration {
 		return 0
 	}
 	return value
+}
+
+func isNilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
