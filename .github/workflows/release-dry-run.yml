@@ -1,0 +1,106 @@
+name: Release dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: v-prefixed semantic version to embed
+        required: true
+        default: v1.0.0-rc.0
+  pull_request:
+    paths:
+      - '.github/workflows/release*.yml'
+      - 'cmd/orm/**'
+      - 'cmd/ormgen/**'
+      - 'cmd/releasepack/**'
+      - 'cmd/releaseverify/**'
+      - 'internal/buildinfo/**'
+      - 'internal/releasepack/**'
+      - 'docs/releases.md'
+      - 'README.md'
+      - 'LICENSE'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Reproducible release artifacts
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version || 'v1.0.0-rc.0' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25.x'
+          cache: false
+
+      - name: Verify clean source and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+          test -z "$(git status --porcelain)"
+
+      - name: Build release artifacts twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_date="$(git show -s --format=%cI "$GITHUB_SHA")"
+          go run ./cmd/releasepack \
+            -root . -out dist-a \
+            -version "$RELEASE_VERSION" \
+            -commit "$GITHUB_SHA" \
+            -date "$release_date"
+          go run ./cmd/releasepack \
+            -root . -out dist-b \
+            -version "$RELEASE_VERSION" \
+            -commit "$GITHUB_SHA" \
+            -date "$release_date"
+
+      - name: Verify byte-for-byte reproducibility
+        run: diff -ru --no-dereference dist-a dist-b
+
+      - name: Verify release file and archive boundaries
+        run: go run ./cmd/releaseverify -dir dist-a
+
+      - name: Exercise released Linux binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="${RELEASE_VERSION#v}"
+          archive="dist-a/sevlumen-orm_${release}_linux_amd64.tar.gz"
+          mkdir extracted
+          tar -xzf "$archive" -C extracted
+          root="extracted/sevlumen-orm_${release}_linux_amd64"
+          orm_json="$($root/orm version --json)"
+          ormgen_json="$($root/ormgen -version-json)"
+          jq -e \
+            --arg version "$RELEASE_VERSION" \
+            --arg commit "$GITHUB_SHA" \
+            '.result.version == $version and .result.commit == $commit and .result.dirty == false' \
+            <<<"$orm_json"
+          jq -e \
+            --arg version "$RELEASE_VERSION" \
+            --arg commit "$GITHUB_SHA" \
+            '.version == $version and .commit == $commit and .dirty == false' \
+            <<<"$ormgen_json"
+
+      - name: Upload reviewed dry-run artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sevlumen-orm-${{ env.RELEASE_VERSION }}-${{ github.sha }}
+          path: dist-a/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
