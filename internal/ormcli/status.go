@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+
+	"github.com/sevlumen/orm/postgres/runner"
 )
 
 const statusUsage = `Usage: orm status [options]
@@ -43,22 +45,38 @@ func (app *App) runStatus(ctx context.Context, args []string) error {
 	}
 	defer pool.Close()
 	defer cancel()
-	status, err := migrationRunner.Status(commandContext, resolved.directory)
+
+	statuses, err := migrationRunner.Status(commandContext)
 	if err != nil {
 		return protectError(err, resolved.secrets)
 	}
-	result := statusResult{
-		Local:   nonNilStrings(status.LocalIDs),
-		Applied: nonNilStrings(status.AppliedIDs),
-		Pending: nonNilStrings(status.PendingIDs),
-	}
+	result := mapStatus(statuses)
 	human := fmt.Sprintf("local: %d, applied: %d, pending: %d\n", len(result.Local), len(result.Applied), len(result.Pending))
 	return app.writeResult(flags.jsonOutput, "status", result, human)
 }
 
-func nonNilStrings(values []string) []string {
-	if len(values) == 0 {
-		return []string{}
+func mapStatus(statuses []runner.Status) statusResult {
+	result := statusResult{
+		Local:   make([]string, 0, len(statuses)),
+		Applied: make([]string, 0, len(statuses)),
+		Pending: make([]string, 0, len(statuses)),
 	}
-	return append([]string(nil), values...)
+	for _, status := range statuses {
+		result.Local = append(result.Local, status.ID)
+		switch status.State {
+		case runner.StateApplied:
+			result.Applied = append(result.Applied, status.ID)
+		case runner.StatePending:
+			result.Pending = append(result.Pending, status.ID)
+		}
+	}
+	return result
+}
+
+func resultIDs(results []runner.Result) []string {
+	ids := make([]string, len(results))
+	for index, result := range results {
+		ids[index] = result.ID
+	}
+	return ids
 }
