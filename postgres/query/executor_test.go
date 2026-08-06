@@ -66,16 +66,16 @@ func TestNewExecutorRejectsTypedNilDependencies(t *testing.T) {
 	}
 }
 
-func TestExecutionErrorDoesNotFormatArgumentValues(t *testing.T) {
+func TestExecutionErrorDoesNotFormatArgumentOrDriverValues(t *testing.T) {
 	t.Parallel()
 
-	driverErr := errors.New("driver failure")
+	secret := "tenant-secret-that-must-not-be-logged"
+	driverErr := errors.New("duplicate key contains " + secret)
 	database := &executorFakeDB{execErr: driverErr}
 	executor, err := NewExecutor(database)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret := "tenant-secret-that-must-not-be-logged"
 	_, err = executor.Exec(context.Background(), "update", Statement{
 		SQL:  `UPDATE "users" SET "token" = $1`,
 		Args: []any{secret},
@@ -84,7 +84,7 @@ func TestExecutionErrorDoesNotFormatArgumentValues(t *testing.T) {
 		t.Fatal("expected execution error")
 	}
 	if strings.Contains(err.Error(), secret) {
-		t.Fatalf("execution error leaked argument value: %v", err)
+		t.Fatalf("execution error leaked data: %v", err)
 	}
 	var executionErr *ExecutionError
 	if !errors.As(err, &executionErr) {
