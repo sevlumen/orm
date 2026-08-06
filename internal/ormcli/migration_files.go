@@ -40,11 +40,29 @@ func loadSnapshot(path string) (migration.Snapshot, error) {
 }
 
 func readLimited(path string, maximum int64) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	if info.Size() > maximum {
+		return nil, fmt.Errorf("%s exceeds %d bytes", path, maximum)
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat opened %s: %w", path, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("%s changed while opening", path)
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -85,11 +103,12 @@ func loadRenameOptions(path string) (migration.DiffOptions, error) {
 	if file.Version != 1 {
 		return migration.DiffOptions{}, fmt.Errorf("unsupported rename intent version %d", file.Version)
 	}
-	options := migration.DiffOptions{Renames: append([]migration.Rename(nil), file.Renames...)}
-	if err := migration.ValidateRenames(options.Renames); err != nil {
-		return migration.DiffOptions{}, err
+	for index, rename := range file.Renames {
+		if err := rename.Validate(); err != nil {
+			return migration.DiffOptions{}, fmt.Errorf("rename intent %d: %w", index, err)
+		}
 	}
-	return options, nil
+	return migration.DiffOptions{Renames: append([]migration.Rename(nil), file.Renames...)}, nil
 }
 
 func localSnapshots(directory string) ([]string, []migration.Snapshot, error) {
@@ -103,7 +122,11 @@ func localSnapshots(directory string) ([]string, []migration.Snapshot, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("load migration %s: %w", id, err)
 		}
-		snapshots[index] = loaded.Snapshot
+		snapshot, err := migration.ParseSnapshot(loaded.SnapshotJSON)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse migration %s snapshot: %w", id, err)
+		}
+		snapshots[index] = snapshot
 	}
 	return ids, snapshots, nil
 }
