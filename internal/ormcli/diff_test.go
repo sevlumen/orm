@@ -29,7 +29,7 @@ func TestDiffAndValidateArtifactWorkflow(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	app := New()
 	app.Out, app.Err = &stdout, &stderr
-	firstID := "202608060001_init"
+	firstID := "20260806000100_init"
 	exit := app.Run(context.Background(), []string{
 		"diff", "--after", firstPath, "--id", firstID,
 		"--migrations", migrationsDirectory, "--max-risk", "safe", "--json",
@@ -54,7 +54,7 @@ func TestDiffAndValidateArtifactWorkflow(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	exit = app.Run(context.Background(), []string{
-		"diff", "--after", firstPath, "--id", "202608060002_noop", "--migrations", migrationsDirectory,
+		"diff", "--after", firstPath, "--id", "20260806000200_noop", "--migrations", migrationsDirectory,
 	})
 	if exit != 1 || !strings.Contains(stderr.String(), "no schema changes") {
 		t.Fatalf("noop exit=%d stderr=%s", exit, stderr.String())
@@ -69,7 +69,7 @@ func TestDiffAndValidateArtifactWorkflow(t *testing.T) {
 		UniqueConstraints: []schema.UniqueConstraint{{Name: "uq_users_email", Columns: []string{"email"}}},
 	}}})
 	secondPath := writeSnapshot(t, root, "second.json", secondSnapshot)
-	secondID := "202608060002_unique"
+	secondID := "20260806000200_unique"
 
 	stderr.Reset()
 	exit = app.Run(context.Background(), []string{
@@ -103,14 +103,14 @@ func TestDiffAndValidateArtifactWorkflow(t *testing.T) {
 	stderr.Reset()
 	exit = app.Run(context.Background(), []string{
 		"diff", "--before", emptyPath, "--after", secondPath,
-		"--id", "202608060003_divergent", "--migrations", migrationsDirectory,
+		"--id", "20260806000300_divergent", "--migrations", migrationsDirectory,
 		"--max-risk", "destructive",
 	})
 	if exit != 1 || !strings.Contains(stderr.String(), "does not match latest") {
 		t.Fatalf("divergent before exit=%d stderr=%s", exit, stderr.String())
 	}
 
-	upPath := filepath.Join(migrationsDirectory, secondID, artifact.UpFilename)
+	upPath := filepath.Join(migrationsDirectory, secondID, artifact.UpFile)
 	if err := os.WriteFile(upPath, []byte("SELECT 1;\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
