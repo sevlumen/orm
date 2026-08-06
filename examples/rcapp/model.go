@@ -11,6 +11,7 @@ import (
 type Account struct {
 	ID          int64   `orm:"column:id;type:bigint;primaryKey;insertOnly"`
 	LoginEmail  string  `orm:"column:login_email;type:text;notNull;unique"`
+	LegacyNote  *string `orm:"column:legacy_note;type:text;nullable"`
 	DisplayName *string `orm:"column:display_name;type:text;nullable"`
 	Active      bool    `orm:"column:active;type:boolean;notNull;default:true"`
 }
