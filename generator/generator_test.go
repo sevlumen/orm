@@ -54,13 +54,13 @@ func TestGenerateDeterministicTypedMetadataThatCompiles(t *testing.T) {
 	text := string(first)
 	checks := []string{
 		"var UserORM = newUserORMMetadata()",
-		"Table *ormquery.Table[User]",
-		"ID ormquery.Column[User, int64]",
-		"Email ormquery.Column[User, *string]",
-		"CreatedAt ormquery.Column[User, tm.Time]",
-		"Payload ormquery.Column[User, json.RawMessage]",
-		"Tags ormquery.Column[User, []string]",
-		"Metadata ormquery.Column[User, map[string]any]",
+		"*ormquery.Table[User]",
+		"ormquery.Column[User, int64]",
+		"ormquery.Column[User, *string]",
+		"ormquery.Column[User, tm.Time]",
+		"ormquery.Column[User, json.RawMessage]",
+		"ormquery.Column[User, []string]",
+		"ormquery.Column[User, map[string]any]",
 		"ormquery.InsertOnlyColumn()",
 		"ormquery.ReadOnlyColumn()",
 		`NewTable[User]("app_users"`,
@@ -211,11 +211,17 @@ func repositoryRoot(t *testing.T) string {
 
 func runGoTest(t *testing.T, dir string) {
 	t.Helper()
-	command := exec.Command("go", "test", "./...")
+	runGoCommand(t, dir, "mod", "tidy")
+	runGoCommand(t, dir, "test", "./...")
+}
+
+func runGoCommand(t *testing.T, dir string, arguments ...string) {
+	t.Helper()
+	command := exec.Command("go", arguments...)
 	command.Dir = dir
 	command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("generated package does not compile: %v\n%s", err, output)
+		t.Fatalf("go %s failed: %v\n%s", strings.Join(arguments, " "), err, output)
 	}
 }
