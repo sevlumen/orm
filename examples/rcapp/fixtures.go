@@ -35,12 +35,32 @@ func InitialSnapshot() (migration.Snapshot, error) {
 	}})
 }
 
+// SafeSnapshot adds only a nullable column and therefore exercises the safe
+// migration gate on an already populated legacy database.
+func SafeSnapshot() (migration.Snapshot, error) {
+	initial, err := InitialSnapshot()
+	if err != nil {
+		return migration.Snapshot{}, err
+	}
+	model := initial.Schema
+	for tableIndex := range model.Tables {
+		if model.Tables[tableIndex].Name == "users" {
+			model.Tables[tableIndex].Columns = append(model.Tables[tableIndex].Columns, schema.Column{
+				Name:     "legacy_note",
+				Type:     "text",
+				Nullable: true,
+			})
+		}
+	}
+	return migration.NewSnapshot(model)
+}
+
 // FinalSnapshot is generated from the maintained final application entities.
 func FinalSnapshot() (migration.Snapshot, error) {
 	return orm.BuildSnapshot(Account{}, Order{})
 }
 
-// DestructiveSnapshot removes display_name to exercise destructive-risk gates
+// DestructiveSnapshot removes legacy_note to exercise destructive-risk gates
 // without applying the data-losing migration.
 func DestructiveSnapshot() (migration.Snapshot, error) {
 	final, err := FinalSnapshot()
@@ -54,20 +74,11 @@ func DestructiveSnapshot() (migration.Snapshot, error) {
 		}
 		columns := model.Tables[tableIndex].Columns[:0]
 		for _, column := range model.Tables[tableIndex].Columns {
-			if column.Name != "display_name" {
+			if column.Name != "legacy_note" {
 				columns = append(columns, column)
 			}
 		}
 		model.Tables[tableIndex].Columns = columns
-		for index := range model.Tables[tableIndex].Indexes {
-			include := model.Tables[tableIndex].Indexes[index].Include[:0]
-			for _, column := range model.Tables[tableIndex].Indexes[index].Include {
-				if column != "display_name" {
-					include = append(include, column)
-				}
-			}
-			model.Tables[tableIndex].Indexes[index].Include = include
-		}
 	}
 	return migration.NewSnapshot(model)
 }
