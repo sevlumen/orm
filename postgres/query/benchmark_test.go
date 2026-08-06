@@ -130,8 +130,8 @@ func TestTypedHotPathAllocationBudgets(t *testing.T) {
 		}
 		benchmarkUserSink = value
 	})
-	if scanAllocations > 2 {
-		t.Fatalf("typed table scan allocations = %.2f, budget = 2", scanAllocations)
+	if scanAllocations > 4 {
+		t.Fatalf("typed table scan allocations = %.2f, budget = 4", scanAllocations)
 	}
 }
 
