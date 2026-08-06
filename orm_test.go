@@ -44,7 +44,7 @@ func TestUnsupportedType(t *testing.T) {
 	t.Parallel()
 
 	type Invalid struct {
-		Metadata map[string]string
+		Metadata map[int]string
 	}
 
 	if _, err := orm.PostgreSQLSchema(Invalid{}); err == nil {
