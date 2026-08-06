@@ -109,7 +109,7 @@ func TestTypedRelationsAgainstPostgreSQL(t *testing.T) {
 	defer dropRelationTables(pool, names)
 	seedRelationTables(t, ctx, pool, names)
 
-	metadata := newRelationMetadata(t, names)
+	metadata := newRelationMetadata(names)
 	observer := &relationQueryObserver{}
 	executor, err := NewExecutor(pool, WithObserver(observer))
 	if err != nil {
@@ -374,60 +374,57 @@ func dropRelationTables(pool *pgxpool.Pool, names map[string]string) {
 	}
 }
 
-func newRelationMetadata(t *testing.T, names map[string]string) relationMetadata {
-	t.Helper()
+func newRelationMetadata(names map[string]string) relationMetadata {
 	var metadata relationMetadata
-	metadata.accounts = mustRelationTable(t, NewTable[relationAccount](names["accounts"], []string{"id", "manager_id", "tenant_id"}, func(row RowScanner) (relationAccount, error) {
+	metadata.accounts = mustRelationTable(NewTable[relationAccount](names["accounts"], []string{"id", "manager_id", "tenant_id"}, func(row RowScanner) (relationAccount, error) {
 		var value relationAccount
 		err := row.Scan(&value.ID, &value.ManagerID, &value.TenantID)
 		return value, err
 	}))
-	metadata.account.ID = mustRelationColumn(t, NewColumn[relationAccount, int64](metadata.accounts, "id"))
-	metadata.account.ManagerID = mustRelationColumn(t, NewColumn[relationAccount, *int64](metadata.accounts, "manager_id"))
-	metadata.account.TenantID = mustRelationColumn(t, NewColumn[relationAccount, int64](metadata.accounts, "tenant_id"))
+	metadata.account.ID = mustRelationColumn(NewColumn[relationAccount, int64](metadata.accounts, "id"))
+	metadata.account.ManagerID = mustRelationColumn(NewColumn[relationAccount, *int64](metadata.accounts, "manager_id"))
+	metadata.account.TenantID = mustRelationColumn(NewColumn[relationAccount, int64](metadata.accounts, "tenant_id"))
 
-	metadata.orders = mustRelationTable(t, NewTable[relationOrder](names["orders"], []string{"id", "account_id", "tenant_id", "active"}, func(row RowScanner) (relationOrder, error) {
+	metadata.orders = mustRelationTable(NewTable[relationOrder](names["orders"], []string{"id", "account_id", "tenant_id", "active"}, func(row RowScanner) (relationOrder, error) {
 		var value relationOrder
 		err := row.Scan(&value.ID, &value.AccountID, &value.TenantID, &value.Active)
 		return value, err
 	}))
-	metadata.order.ID = mustRelationColumn(t, NewColumn[relationOrder, int64](metadata.orders, "id"))
-	metadata.order.AccountID = mustRelationColumn(t, NewColumn[relationOrder, int64](metadata.orders, "account_id"))
-	metadata.order.TenantID = mustRelationColumn(t, NewColumn[relationOrder, int64](metadata.orders, "tenant_id"))
-	metadata.order.Active = mustRelationColumn(t, NewColumn[relationOrder, bool](metadata.orders, "active"))
+	metadata.order.ID = mustRelationColumn(NewColumn[relationOrder, int64](metadata.orders, "id"))
+	metadata.order.AccountID = mustRelationColumn(NewColumn[relationOrder, int64](metadata.orders, "account_id"))
+	metadata.order.TenantID = mustRelationColumn(NewColumn[relationOrder, int64](metadata.orders, "tenant_id"))
+	metadata.order.Active = mustRelationColumn(NewColumn[relationOrder, bool](metadata.orders, "active"))
 
-	metadata.profiles = mustRelationTable(t, NewTable[relationProfile](names["profiles"], []string{"id", "account_id", "label"}, func(row RowScanner) (relationProfile, error) {
+	metadata.profiles = mustRelationTable(NewTable[relationProfile](names["profiles"], []string{"id", "account_id", "label"}, func(row RowScanner) (relationProfile, error) {
 		var value relationProfile
 		err := row.Scan(&value.ID, &value.AccountID, &value.Label)
 		return value, err
 	}))
-	metadata.profile.ID = mustRelationColumn(t, NewColumn[relationProfile, int64](metadata.profiles, "id"))
-	metadata.profile.AccountID = mustRelationColumn(t, NewColumn[relationProfile, int64](metadata.profiles, "account_id"))
-	metadata.profile.Label = mustRelationColumn(t, NewColumn[relationProfile, string](metadata.profiles, "label"))
+	metadata.profile.ID = mustRelationColumn(NewColumn[relationProfile, int64](metadata.profiles, "id"))
+	metadata.profile.AccountID = mustRelationColumn(NewColumn[relationProfile, int64](metadata.profiles, "account_id"))
+	metadata.profile.Label = mustRelationColumn(NewColumn[relationProfile, string](metadata.profiles, "label"))
 
-	metadata.settings = mustRelationTable(t, NewTable[relationSetting](names["settings"], []string{"tenant_id", "account_id", "value"}, func(row RowScanner) (relationSetting, error) {
+	metadata.settings = mustRelationTable(NewTable[relationSetting](names["settings"], []string{"tenant_id", "account_id", "value"}, func(row RowScanner) (relationSetting, error) {
 		var value relationSetting
 		err := row.Scan(&value.TenantID, &value.AccountID, &value.Value)
 		return value, err
 	}))
-	metadata.setting.TenantID = mustRelationColumn(t, NewColumn[relationSetting, int64](metadata.settings, "tenant_id"))
-	metadata.setting.AccountID = mustRelationColumn(t, NewColumn[relationSetting, int64](metadata.settings, "account_id"))
-	metadata.setting.Value = mustRelationColumn(t, NewColumn[relationSetting, string](metadata.settings, "value"))
+	metadata.setting.TenantID = mustRelationColumn(NewColumn[relationSetting, int64](metadata.settings, "tenant_id"))
+	metadata.setting.AccountID = mustRelationColumn(NewColumn[relationSetting, int64](metadata.settings, "account_id"))
+	metadata.setting.Value = mustRelationColumn(NewColumn[relationSetting, string](metadata.settings, "value"))
 	return metadata
 }
 
-func mustRelationTable[T any](t *testing.T, table *Table[T], err error) *Table[T] {
-	t.Helper()
+func mustRelationTable[T any](table *Table[T], err error) *Table[T] {
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	return table
 }
 
-func mustRelationColumn[T any, V any](t *testing.T, column Column[T, V], err error) Column[T, V] {
-	t.Helper()
+func mustRelationColumn[T any, V any](column Column[T, V], err error) Column[T, V] {
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 	return column
 }
