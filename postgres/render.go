@@ -20,6 +20,13 @@ func RenderCreateSchema(model schema.Schema) (string, error) {
 		}
 		statements = append(statements, statement)
 	}
+	// Foreign keys are deliberately added after every table, key, and index exists.
+	// This makes schema creation deterministic even when relations form cycles.
+	for _, table := range model.Tables {
+		for _, foreignKey := range table.ForeignKeys {
+			statements = append(statements, addForeignKeyConstraint(table.Name, foreignKey))
+		}
+	}
 	if len(statements) == 0 {
 		return "\n", nil
 	}
@@ -106,6 +113,37 @@ func renderIndex(table string, index schema.Index) string {
 	if strings.TrimSpace(index.Predicate) != "" {
 		builder.WriteString(" WHERE ")
 		builder.WriteString(index.Predicate)
+	}
+	builder.WriteByte(';')
+	return builder.String()
+}
+
+func addForeignKeyConstraint(table string, foreignKey schema.ForeignKey) string {
+	var builder strings.Builder
+	builder.WriteString("ALTER TABLE ")
+	builder.WriteString(quote(table))
+	builder.WriteString(" ADD CONSTRAINT ")
+	builder.WriteString(quote(foreignKey.Name))
+	builder.WriteString(" FOREIGN KEY (")
+	builder.WriteString(quoteList(foreignKey.Columns))
+	builder.WriteString(") REFERENCES ")
+	builder.WriteString(quote(foreignKey.ReferencedTable))
+	builder.WriteString(" (")
+	builder.WriteString(quoteList(foreignKey.ReferencedColumns))
+	builder.WriteByte(')')
+	if foreignKey.OnDelete != "" {
+		builder.WriteString(" ON DELETE ")
+		builder.WriteString(string(foreignKey.OnDelete))
+	}
+	if foreignKey.OnUpdate != "" {
+		builder.WriteString(" ON UPDATE ")
+		builder.WriteString(string(foreignKey.OnUpdate))
+	}
+	if foreignKey.Deferrable {
+		builder.WriteString(" DEFERRABLE")
+		if foreignKey.InitiallyDeferred {
+			builder.WriteString(" INITIALLY DEFERRED")
+		}
 	}
 	builder.WriteByte(';')
 	return builder.String()
