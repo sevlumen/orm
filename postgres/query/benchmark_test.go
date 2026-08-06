@@ -102,6 +102,9 @@ func BenchmarkRowScan(b *testing.B) {
 }
 
 func TestTypedHotPathAllocationBudgets(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation budgets run in a dedicated non-race CI step")
+	}
 	table, columns := benchmarkUserMetadata(t, "allocation_users")
 	builder := Select(table).
 		Where(And(columns.ID.Eq(int64(42)), columns.Active.Eq(true))).
