@@ -1,0 +1,52 @@
+package github.com/sevlumen/orm/migration/artifact
+
+const (
+	FormatVersion = 1
+
+	ManifestFile = "manifest.json"
+	UpFile       = "up.sql"
+	DownFile     = "down.sql"
+	SnapshotFile = "snapshot.json"
+)
+
+func (a Artifact) Checksum() (string, error)
+
+func (a Artifact) MarshalManifest() ([]byte, error)
+
+func (a Artifact) Validate() error
+
+func (m Manifest) Validate() error
+
+func Build(id string, generated postgres.MigrationSQL, next migration.Snapshot) (Artifact, error)
+
+func List(root string) ([]string, error)
+
+func Load(root, id string) (Artifact, error)
+
+func ParseManifest(data []byte) (Manifest, error)
+
+func ValidateID(id string) error
+
+func Write(root string, artifact Artifact) (string, error)
+
+type Artifact struct {
+	Manifest     Manifest
+	UpSQL        []byte
+	DownSQL      []byte
+	SnapshotJSON []byte
+}
+
+type FileChecksums struct {
+	UpSQL        string `json:"up.sql"`
+	DownSQL      string `json:"down.sql"`
+	SnapshotJSON string `json:"snapshot.json"`
+}
+
+type Manifest struct {
+	FormatVersion int           `json:"formatVersion"`
+	ID            string        `json:"id"`
+	Risk          string        `json:"risk"`
+	Warnings      []string      `json:"warnings,omitempty"`
+	Files         FileChecksums `json:"files"`
+}
+
