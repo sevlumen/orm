@@ -115,8 +115,8 @@ func TestTypedHotPathAllocationBudgets(t *testing.T) {
 		}
 		benchmarkStatementSink = statement
 	})
-	if buildAllocations > 40 {
-		t.Fatalf("typed SELECT build allocations = %.2f, budget = 40", buildAllocations)
+	if buildAllocations > 36 {
+		t.Fatalf("typed SELECT build allocations = %.2f, budget = 36", buildAllocations)
 	}
 
 	scanner := benchmarkScanner{id: 42, email: "person@example.com", active: true}
@@ -127,8 +127,8 @@ func TestTypedHotPathAllocationBudgets(t *testing.T) {
 		}
 		benchmarkUserSink = value
 	})
-	if scanAllocations > 8 {
-		t.Fatalf("typed table scan allocations = %.2f, budget = 8", scanAllocations)
+	if scanAllocations > 2 {
+		t.Fatalf("typed table scan allocations = %.2f, budget = 2", scanAllocations)
 	}
 }
 
