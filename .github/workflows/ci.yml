@@ -51,6 +51,9 @@ jobs:
           GOOS=windows GOARCH=amd64 go test -c ./generator -o /tmp/generator.test.exe
           GOOS=windows GOARCH=amd64 go test -c ./cmd/ormgen -o /tmp/ormgen.test.exe
 
+      - name: Verify allocation budgets
+        run: go test ./postgres/query -run '^TestTypedHotPathAllocationBudgets$' -count=1
+
       - name: Test with race detector
         run: go test -race ./... -count=1
 
