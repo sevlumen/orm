@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sevlumen/orm/internal/buildinfo"
 )
 
 const outputVersion = 1
@@ -22,6 +23,7 @@ type App struct {
 	Err       io.Writer
 	LookupEnv func(string) (string, bool)
 	OpenPool  func(context.Context, string) (*pgxpool.Pool, error)
+	BuildInfo func() buildinfo.Info
 }
 
 // New returns a CLI runtime with process defaults.
@@ -32,6 +34,7 @@ func New() *App {
 		Err:       os.Stderr,
 		LookupEnv: os.LookupEnv,
 		OpenPool:  pgxpool.New,
+		BuildInfo: buildinfo.Current,
 	}
 }
 
@@ -47,6 +50,8 @@ func (app *App) Run(ctx context.Context, args []string) int {
 	case "help", "-h", "--help":
 		_, _ = io.WriteString(app.Out, rootUsage)
 		return 0
+	case "version":
+		err = app.runVersion(args[1:])
 	case "generate":
 		err = app.runGenerate(ctx, args[1:])
 	case "diff":
@@ -93,6 +98,9 @@ func (app *App) ensureDefaults() {
 	}
 	if app.OpenPool == nil {
 		app.OpenPool = pgxpool.New
+	}
+	if app.BuildInfo == nil {
+		app.BuildInfo = buildinfo.Current
 	}
 }
 
@@ -193,6 +201,7 @@ func (values *stringList) Set(input string) error {
 const rootUsage = `Usage: orm <command> [options]
 
 Commands:
+  version    Print release version and build provenance metadata.
   generate   Generate typed table, column, and scanner metadata.
   diff       Create a checksummed migration artifact from snapshots.
   validate   Validate a snapshot or every local migration artifact.
