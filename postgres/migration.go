@@ -63,24 +63,28 @@ func renderOperations(operations []migration.Operation, reverse bool) (string, e
 // manually instead of through migration.Diff. Stable buckets preserve the
 // planner's deterministic order within each operation class.
 func orderOperations(operations []migration.Operation) []migration.Operation {
-	buckets := make([][]migration.Operation, 8)
+	buckets := make([][]migration.Operation, 9)
 	for _, operation := range operations {
-		priority := 7
+		priority := 8
 		switch operation.Kind {
-		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
+		case migration.DropForeignKey:
 			priority = 0
-		case migration.DropTable:
+		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
 			priority = 1
-		case migration.CreateTable:
+		case migration.DropTable:
 			priority = 2
-		case migration.AddColumn:
+		case migration.CreateTable:
 			priority = 3
-		case migration.AlterColumn:
+		case migration.AddColumn:
 			priority = 4
-		case migration.DropColumn:
+		case migration.AlterColumn:
 			priority = 5
-		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
+		case migration.DropColumn:
 			priority = 6
+		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
+			priority = 7
+		case migration.AddForeignKey:
+			priority = 8
 		}
 		buckets[priority] = append(buckets[priority], operation)
 	}
@@ -150,6 +154,16 @@ func renderOperation(operation migration.Operation, reverse bool) (string, error
 			return addCheckConstraint(operation.Table, *operation.BeforeCheck), nil
 		}
 		return dropConstraint(operation.Table, operation.BeforeCheck.Name), nil
+	case migration.AddForeignKey:
+		if reverse {
+			return dropConstraint(operation.Table, operation.AfterForeignKey.Name), nil
+		}
+		return addForeignKeyConstraint(operation.Table, *operation.AfterForeignKey), nil
+	case migration.DropForeignKey:
+		if reverse {
+			return addForeignKeyConstraint(operation.Table, *operation.BeforeForeignKey), nil
+		}
+		return dropConstraint(operation.Table, operation.BeforeForeignKey.Name), nil
 	default:
 		return "", fmt.Errorf("postgres: unsupported migration operation %q", operation.Kind)
 	}
