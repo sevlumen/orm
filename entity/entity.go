@@ -150,6 +150,7 @@ func parseTag(tag string) (map[string]string, error) {
 	allowed := map[string]bool{
 		"column": true, "type": true, "primaryKey": true, "unique": true,
 		"notNull": true, "nullable": true, "default": true, "generated": true,
+		"readOnly": true, "insertOnly": true, "updateOnly": true,
 	}
 	result := map[string]string{}
 	for _, token := range strings.Split(tag, ";") {
@@ -180,6 +181,18 @@ func parseTag(tag string) (map[string]string, error) {
 	}
 	if result["default"] != "" && result["generated"] != "" {
 		return nil, fmt.Errorf("default and generated cannot be used together")
+	}
+	capabilities := make([]string, 0, 3)
+	for _, name := range []string{"readOnly", "insertOnly", "updateOnly"} {
+		if result[name] == "true" {
+			capabilities = append(capabilities, name)
+		}
+	}
+	if len(capabilities) > 1 {
+		return nil, fmt.Errorf("mutation capability tags %s cannot be combined", strings.Join(capabilities, ", "))
+	}
+	if result["generated"] != "" && len(capabilities) == 1 && capabilities[0] != "readOnly" {
+		return nil, fmt.Errorf("generated columns must be read-only")
 	}
 	return result, nil
 }

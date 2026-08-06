@@ -45,6 +45,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Cross-compile generator for Windows
+        if: matrix.go == '1.25.x'
+        run: |
+          GOOS=windows GOARCH=amd64 go test -c ./generator -o /tmp/generator.test.exe
+          GOOS=windows GOARCH=amd64 go test -c ./cmd/ormgen -o /tmp/ormgen.test.exe
+
       - name: Test with race detector
         run: go test -race ./... -count=1
 
