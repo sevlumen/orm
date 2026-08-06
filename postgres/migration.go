@@ -63,34 +63,36 @@ func renderOperations(operations []migration.Operation, reverse bool) (string, e
 // manually instead of through migration.Diff. Stable buckets preserve the
 // planner's deterministic order within each operation class.
 func orderOperations(operations []migration.Operation) []migration.Operation {
-	buckets := make([][]migration.Operation, 12)
+	buckets := make([][]migration.Operation, 13)
 	for _, operation := range operations {
-		priority := 11
+		priority := 12
 		switch operation.Kind {
 		case migration.CreateExtension:
 			priority = 0
-		case migration.CreateEnum:
+		case migration.RenameObject:
 			priority = 1
-		case migration.DropForeignKey:
+		case migration.CreateEnum:
 			priority = 2
-		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
+		case migration.DropForeignKey:
 			priority = 3
-		case migration.DropTable:
+		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
 			priority = 4
-		case migration.CreateTable:
+		case migration.DropTable:
 			priority = 5
-		case migration.AddColumn:
+		case migration.CreateTable:
 			priority = 6
-		case migration.AlterColumn:
+		case migration.AddColumn:
 			priority = 7
-		case migration.DropColumn:
+		case migration.AlterColumn:
 			priority = 8
-		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
+		case migration.DropColumn:
 			priority = 9
-		case migration.AddForeignKey:
+		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
 			priority = 10
-		case migration.DropEnum:
+		case migration.AddForeignKey:
 			priority = 11
+		case migration.DropEnum:
+			priority = 12
 		}
 		buckets[priority] = append(buckets[priority], operation)
 	}
@@ -104,6 +106,8 @@ func orderOperations(operations []migration.Operation) []migration.Operation {
 
 func renderOperation(operation migration.Operation, reverse bool) (string, error) {
 	switch operation.Kind {
+	case migration.RenameObject:
+		return renderRename(*operation.Rename, reverse)
 	case migration.CreateExtension:
 		if reverse {
 			return "-- extension " + quote(operation.AfterExtension.Name) + " retained during rollback", nil
@@ -187,6 +191,27 @@ func renderOperation(operation migration.Operation, reverse bool) (string, error
 		return dropConstraint(operation.Table, operation.BeforeForeignKey.Name), nil
 	default:
 		return "", fmt.Errorf("postgres: unsupported migration operation %q", operation.Kind)
+	}
+}
+
+func renderRename(intent migration.Rename, reverse bool) (string, error) {
+	from, to := intent.From, intent.To
+	if reverse {
+		from, to = to, from
+	}
+	switch intent.Kind {
+	case migration.RenameTable:
+		return "ALTER TABLE " + quote(from) + " RENAME TO " + quote(to) + ";", nil
+	case migration.RenameColumn:
+		return "ALTER TABLE " + quote(intent.Table) + " RENAME COLUMN " + quote(from) + " TO " + quote(to) + ";", nil
+	case migration.RenameIndex:
+		return "ALTER INDEX " + quote(from) + " RENAME TO " + quote(to) + ";", nil
+	case migration.RenameConstraint:
+		return "ALTER TABLE " + quote(intent.Table) + " RENAME CONSTRAINT " + quote(from) + " TO " + quote(to) + ";", nil
+	case migration.RenameEnum:
+		return "ALTER TYPE " + quote(from) + " RENAME TO " + quote(to) + ";", nil
+	default:
+		return "", fmt.Errorf("postgres: unsupported rename kind %q", intent.Kind)
 	}
 }
 
