@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/format"
 	"go/parser"
 	"go/token"
@@ -141,15 +142,27 @@ func normalizeTypes(values []string) ([]string, error) {
 
 func parsePackage(dir, output string) ([]sourceFile, string, *token.FileSet, error) {
 	fileSet := token.NewFileSet()
+	var matchErr error
 	packages, err := parser.ParseDir(fileSet, dir, func(info os.FileInfo) bool {
 		name := info.Name()
-		return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") && filepath.Join(dir, name) != output
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || filepath.Join(dir, name) == output {
+			return false
+		}
+		matched, err := build.Default.MatchFile(dir, name)
+		if err != nil {
+			matchErr = err
+			return false
+		}
+		return matched
 	}, parser.ParseComments)
+	if matchErr != nil {
+		return nil, "", nil, fmt.Errorf("ormgen: evaluate Go build constraints: %w", matchErr)
+	}
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("ormgen: parse package: %w", err)
 	}
 	if len(packages) != 1 {
-		return nil, "", nil, fmt.Errorf("ormgen: expected one package in %s, found %d", dir, len(packages))
+		return nil, "", nil, fmt.Errorf("ormgen: expected one active package in %s, found %d", dir, len(packages))
 	}
 	var packageName string
 	var parsed *ast.Package
@@ -185,7 +198,10 @@ func importsForFile(file *ast.File) (map[string]importModel, error) {
 		if spec.Name != nil {
 			alias = spec.Name.Name
 			explicit = true
-			if alias == "." || alias == "_" {
+			switch alias {
+			case ".":
+				return nil, fmt.Errorf("dot imports are not supported; use an explicit import alias for %q", path)
+			case "_":
 				continue
 			}
 		} else {
