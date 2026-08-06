@@ -180,7 +180,7 @@ func databaseSecrets(databaseURL string) []string {
 	parsed, err := url.Parse(databaseURL)
 	if err == nil && parsed.User != nil {
 		if password, exists := parsed.User.Password(); exists && password != "" {
-			secrets = append(secrets, password, url.QueryEscape(password))
+			secrets = append(secrets, password, url.QueryEscape(password), url.PathEscape(password))
 		}
 	}
 	return secrets
