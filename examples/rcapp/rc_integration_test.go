@@ -35,7 +35,6 @@ func TestReleaseCandidateWorkflow(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -43,18 +42,17 @@ func TestReleaseCandidateWorkflow(t *testing.T) {
 	defer pool.Close()
 	resetDatabase(t, ctx, pool)
 
-	exampleDirectory := packageDirectory(t)
 	runCLI(t, ctx, ormBinary, 0,
-		"generate", "--dir", exampleDirectory, "--output", "orm_gen.go",
+		"generate", "--dir", packageDirectory(t), "--output", "orm_gen.go",
 		"--type", "Account", "--type", "Order", "--check",
 	)
 
 	workspace := t.TempDir()
 	migrationsDirectory := filepath.Join(workspace, "migrations")
-	initialPath := writeSnapshot(t, workspace, "initial.snapshot.json", mustSnapshot(t, InitialSnapshot()))
-	safePath := writeSnapshot(t, workspace, "safe.snapshot.json", mustSnapshot(t, SafeSnapshot()))
-	finalPath := writeSnapshot(t, workspace, "final.snapshot.json", mustSnapshot(t, FinalSnapshot()))
-	destructivePath := writeSnapshot(t, workspace, "destructive.snapshot.json", mustSnapshot(t, DestructiveSnapshot()))
+	initialPath := writeLoadedSnapshot(t, workspace, "initial.snapshot.json", InitialSnapshot)
+	safePath := writeLoadedSnapshot(t, workspace, "safe.snapshot.json", SafeSnapshot)
+	finalPath := writeLoadedSnapshot(t, workspace, "final.snapshot.json", FinalSnapshot)
+	destructivePath := writeLoadedSnapshot(t, workspace, "destructive.snapshot.json", DestructiveSnapshot)
 	renamesPath := writeRenames(t, workspace, UpgradeRenames())
 
 	// Fresh database: create and apply the initial review-risk schema.
@@ -67,14 +65,10 @@ func TestReleaseCandidateWorkflow(t *testing.T) {
 		"apply", "--max-risk", "review",
 	)
 
-	if _, err := pool.Exec(ctx, `INSERT INTO users (id, email, active) VALUES (1, $1, true)`, "legacy@example.test"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO orders (id, user_id, total) VALUES (1, 1, 1200)`); err != nil {
-		t.Fatal(err)
-	}
+	mustExec(t, ctx, pool, `INSERT INTO users (id, email, active) VALUES (1, $1, true)`, "legacy@example.test")
+	mustExec(t, ctx, pool, `INSERT INTO orders (id, user_id, total) VALUES (1, 1, 1200)`)
 
-	// Safe migration on a populated earlier schema.
+	// Safe migration on populated legacy data.
 	runCLI(t, ctx, ormBinary, 0,
 		"diff", "--after", safePath, "--id", safeMigrationID,
 		"--migrations", migrationsDirectory, "--max-risk", "safe",
@@ -82,11 +76,9 @@ func TestReleaseCandidateWorkflow(t *testing.T) {
 	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 0,
 		"apply", "--max-risk", "safe",
 	)
-	if _, err := pool.Exec(ctx, `UPDATE users SET legacy_note = $1 WHERE id = 1`, "preserve-me"); err != nil {
-		t.Fatal(err)
-	}
+	mustExec(t, ctx, pool, `UPDATE users SET legacy_note = $1 WHERE id = 1`, "preserve-me")
 
-	// Explicit rename and review-risk upgrade. The safe gate must refuse it.
+	// Explicit rename/review migration. Safe execution must fail closed.
 	runCLI(t, ctx, ormBinary, 0,
 		"diff", "--after", finalPath, "--id", upgradeMigrationID,
 		"--renames", renamesPath, "--migrations", migrationsDirectory,
@@ -110,7 +102,7 @@ func TestReleaseCandidateWorkflow(t *testing.T) {
 
 	exerciseTypedRuntime(t, ctx, pool)
 
-	// Reversible rollback restores the earlier schema shape and preserves rows.
+	// Rollback restores the previous schema shape and preserves non-destructive data.
 	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 0,
 		"rollback", "--steps", "1", "--yes",
 	)
@@ -132,53 +124,9 @@ func TestReleaseCandidateWorkflow(t *testing.T) {
 	)
 	assertLegacyData(t, ctx, pool)
 
-	// Checksum drift fails closed; restoring reviewed bytes recovers status.
-	upgradeSQL := filepath.Join(migrationsDirectory, upgradeMigrationID, "up.sql")
-	originalSQL, err := os.ReadFile(upgradeSQL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(upgradeSQL, append(append([]byte(nil), originalSQL...), []byte("-- tampered\n")...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 1, "status")
-	if err := os.WriteFile(upgradeSQL, originalSQL, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 0, "status")
-
-	// A non-prefix local history is rejected; restoring the missing artifact recovers.
-	initialDirectory := filepath.Join(migrationsDirectory, initialMigrationID)
-	initialBackup := filepath.Join(workspace, initialMigrationID+".backup")
-	if err := os.Rename(initialDirectory, initialBackup); err != nil {
-		t.Fatal(err)
-	}
-	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 1, "status")
-	if err := os.Rename(initialBackup, initialDirectory); err != nil {
-		t.Fatal(err)
-	}
-	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 0, "status")
-
-	// Destructive generation and execution require explicit gates and confirmation.
-	runCLI(t, ctx, ormBinary, 1,
-		"diff", "--after", destructivePath, "--id", destructiveMigrationID,
-		"--migrations", migrationsDirectory, "--max-risk", "safe",
-	)
-	runCLI(t, ctx, ormBinary, 0,
-		"diff", "--after", destructivePath, "--id", destructiveMigrationID,
-		"--migrations", migrationsDirectory, "--max-risk", "destructive",
-	)
-	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 1,
-		"apply", "--max-risk", "safe",
-	)
-	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 2,
-		"apply", "--max-risk", "destructive",
-	)
-	assertColumnExists(t, ctx, pool, "accounts", "legacy_note", true)
-	if err := os.RemoveAll(filepath.Join(migrationsDirectory, destructiveMigrationID)); err != nil {
-		t.Fatal(err)
-	}
-	runDatabaseCLI(t, ctx, ormBinary, databaseURL, migrationsDirectory, 0, "status")
+	verifyChecksumDriftRecovery(t, ctx, ormBinary, databaseURL, migrationsDirectory)
+	verifyHistoryRecovery(t, ctx, ormBinary, databaseURL, migrationsDirectory, workspace)
+	verifyDestructiveGate(t, ctx, pool, ormBinary, databaseURL, migrationsDirectory, destructivePath)
 }
 
 func exerciseTypedRuntime(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
@@ -208,11 +156,8 @@ func exerciseTypedRuntime(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.LoginEmail != payload {
-		t.Fatalf("created payload=%q", created.LoginEmail)
-	}
 	matched, found, err := FindAccountByEmail(ctx, executor, payload)
-	if err != nil || !found || matched.ID != 2 {
+	if err != nil || !found || matched.ID != created.ID {
 		t.Fatalf("payload lookup account=%#v found=%t err=%v", matched, found, err)
 	}
 	assertRelationExists(t, ctx, pool, "accounts", true)
@@ -239,7 +184,6 @@ func exerciseTypedRuntime(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	}); err != nil {
 		t.Fatal(err)
 	}
-
 	updatedName := "Legacy Renamed"
 	updated, err := SetDisplayName(ctx, executor, 1, &updatedName)
 	if err != nil || updated.DisplayName == nil || *updated.DisplayName != updatedName {
@@ -247,7 +191,7 @@ func exerciseTypedRuntime(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	}
 
 	recorder.Reset()
-	relations, err := AccountOrders().Load(ctx, executor, []Account{legacy, created, {ID: 3}})
+	relations, err := AccountOrders().Load(ctx, executor, []Account{legacy, created, Account{ID: 3}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,164 +207,4 @@ func exerciseTypedRuntime(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	}
 
 	deleted, err := query.DeleteOne(ctx, executor, query.Delete(OrderORM.Table).Where(OrderORM.ID.Eq(21)))
-	if err != nil || deleted.ID != 21 {
-		t.Fatalf("deleted order=%#v err=%v", deleted, err)
-	}
-
-	for _, event := range recorder.Events() {
-		if strings.Contains(event.SQL, payload) {
-			t.Fatalf("observer event leaked argument: %#v", event)
-		}
-	}
-}
-
-func runDatabaseCLI(t *testing.T, ctx context.Context, binary, databaseURL, migrations string, expectedExit int, command string, arguments ...string) commandResult {
-	t.Helper()
-	args := []string{command, "--database-url", databaseURL, "--migrations", migrations,
-		"--history-schema", "public", "--history-table", "__sevlumen_rc_migrations",
-		"--lock-key", "9106001", "--timeout", "30s"}
-	args = append(args, arguments...)
-	return runCLI(t, ctx, binary, expectedExit, args...)
-}
-
-type commandResult struct {
-	stdout string
-	stderr string
-}
-
-func runCLI(t *testing.T, parent context.Context, binary string, expectedExit int, arguments ...string) commandResult {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, binary, arguments...)
-	command.Env = os.Environ()
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	err := command.Run()
-	exitCode := 0
-	if err != nil {
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			exitCode = exitError.ExitCode()
-		} else {
-			t.Fatalf("run %s %s: %v", binary, strings.Join(arguments, " "), err)
-		}
-	}
-	if exitCode != expectedExit {
-		t.Fatalf("%s %s exit=%d want=%d\nstdout:\n%s\nstderr:\n%s", binary, strings.Join(arguments, " "), exitCode, expectedExit, stdout.String(), stderr.String())
-	}
-	return commandResult{stdout: stdout.String(), stderr: stderr.String()}
-}
-
-func resetDatabase(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
-	if _, err := pool.Exec(ctx, `DROP SCHEMA IF EXISTS public CASCADE`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `CREATE SCHEMA public`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func packageDirectory(t *testing.T) string {
-	t.Helper()
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve rcapp source directory")
-	}
-	return filepath.Dir(filename)
-}
-
-func mustSnapshot(t *testing.T, snapshot migration.Snapshot, err error) migration.Snapshot {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return snapshot
-}
-
-func writeSnapshot(t *testing.T, directory, name string, snapshot migration.Snapshot) string {
-	t.Helper()
-	data, err := snapshot.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(directory, name)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func writeRenames(t *testing.T, directory string, options migration.DiffOptions) string {
-	t.Helper()
-	payload := struct {
-		Version int                `json:"version"`
-		Renames []migration.Rename `json:"renames"`
-	}{Version: 1, Renames: options.Renames}
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, '\n')
-	path := filepath.Join(directory, "renames.json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func assertLegacyData(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
-	var email string
-	var note *string
-	if err := pool.QueryRow(ctx, `SELECT login_email, legacy_note FROM accounts WHERE id = 1`).Scan(&email, &note); err != nil {
-		t.Fatal(err)
-	}
-	if email != "legacy@example.test" || note == nil || *note != "preserve-me" {
-		t.Fatalf("upgraded data email=%q note=%v", email, note)
-	}
-	var accountID int64
-	var total int64
-	if err := pool.QueryRow(ctx, `SELECT account_id, total FROM orders WHERE id = 1`).Scan(&accountID, &total); err != nil {
-		t.Fatal(err)
-	}
-	if accountID != 1 || total != 1200 {
-		t.Fatalf("upgraded order account=%d total=%d", accountID, total)
-	}
-}
-
-func assertRelationExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, relation string, expected bool) {
-	t.Helper()
-	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'public' AND c.relname = $1
-	)`, relation).Scan(&exists); err != nil {
-		t.Fatal(err)
-	}
-	if exists != expected {
-		t.Fatalf("relation %q exists=%t want=%t", relation, exists, expected)
-	}
-}
-
-func assertColumnExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, column string, expected bool) {
-	t.Helper()
-	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
-	)`, table, column).Scan(&exists); err != nil {
-		t.Fatal(err)
-	}
-	if exists != expected {
-		t.Fatalf("column %s.%s exists=%t want=%t", table, column, exists, expected)
-	}
-}
-
-func Example_releaseCandidateWorkflow() {
-	fmt.Println("generate -> diff -> validate -> apply -> typed runtime -> rollback -> recovery")
-	// Output: generate -> diff -> validate -> apply -> typed runtime -> rollback -> recovery
-}
+	if err != nil ||‘•±•Ñ•¹%€„ô€ÈÄì($%Ð¹…Ñ…±˜ ‰‘•±•Ñ•½É‘•Èô”Ø•ÉÈô•Øˆ°‘•±•Ñ•°•ÉÈ¤(%ô(%™½È|°•Ù•¹Ð€èôÉ…¹”É•½É‘•È¹Ù•¹ÑÌ ¤ì($%¥˜ÍÑÉ¥¹Ì¹½¹Ñ…¥¹Ì¡•Ù•¹Ð¹ME0°Á…å±½…¤ì($$%Ð¹…Ñ…±˜ ‰½‰Í•ÉÙ•È•Ù•¹Ð±•…­•…ÉÕµ•¹Ðè€”Øˆ°•Ù•¹Ð¤($%ô(%ô)ô()™Õ¹ŒÙ•É¥™å¡•­ÍÕµÉ¥™ÑI•½Ù•Éä¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹ÌÍÑÉ¥¹œ¤ì(%Ð¹!•±Á•È ¤(%Á…Ñ €èô™¥±•Á…Ñ ¹)½¥¸¡µ¥É…Ñ¥½¹Ì°ÕÁÉ…‘•5¥É…Ñ¥½¹%°€‰ÕÀ¹ÍÅ°ˆ¤(%½É¥¥¹…°°•ÉÈ€èô½Ì¹I•…‘¥±”¡Á…Ñ ¤(%¥˜•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%Ñ…µÁ•É•€èô…ÁÁ•¹¡…ÁÁ•¹¡mu‰åÑ”¡¹¥°¤°½É¥¥¹…°¸¸¸¤°mu‰åÑ” ˆ´´Ñ…µÁ•É•‘q¸ˆ¤¸¸¸¤(%¥˜•ÉÈ€èô½Ì¹]É¥Ñ•¥±”¡Á…Ñ °Ñ…µÁ•É•°€Á¼ØÐÐ¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%ÉÕ¹…Ñ…‰…Í•1$¡Ð°Ñà°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°€Ä°€‰ÍÑ…ÑÕÌˆ¤(%¥˜•ÉÈ€èô½Ì¹]É¥Ñ•¥±”¡Á…Ñ °½É¥¥¹…°°€Á¼ØÐÐ¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%ÉÕ¹…Ñ…‰…Í•1$¡Ð°Ñà°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°€À°€‰ÍÑ…ÑÕÌˆ¤)ô()™Õ¹ŒÙ•É¥™å!¥ÍÑ½ÉåI•½Ù•Éä¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°Ý½É­ÍÁ…”ÍÑÉ¥¹œ¤ì(%Ð¹!•±Á•È ¤(%½É¥¥¹…°€èô™¥±•Á…Ñ ¹)½¥¸¡µ¥É…Ñ¥½¹Ì°¥¹¥Ñ¥…±5¥É…Ñ¥½¹%¤(%‰…­ÕÀ€èô™¥±•Á…Ñ ¹)½¥¸¡Ý½É­ÍÁ…”°¥¹¥Ñ¥…±5¥É…Ñ¥½¹%¬ˆ¹‰…­ÕÀˆ¤(%¥˜•ÉÈ€èô½Ì¹I•¹…µ”¡½É¥¥¹…°°‰…­ÕÀ¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%ÉÕ¹…Ñ…‰…Í•1$¡Ð°Ñà°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°€Ä°€‰ÍÑ…ÑÕÌˆ¤(%¥˜•ÉÈ€èô½Ì¹I•¹…µ”¡‰…­ÕÀ°½É¥¥¹…°¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%ÉÕ¹…Ñ…‰…Í•1$¡Ð°Ñà°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°€À°€‰ÍÑ…ÑÕÌˆ¤)ô()™Õ¹ŒÙ•É¥™å•ÍÑÉÕÑ¥Ù•…Ñ”¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°Á½½°€©ÁáÁ½½°¹A½½°°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°…™Ñ•ÈÍÑÉ¥¹œ¤ì(%Ð¹!•±Á•È ¤(%ÉÕ¹1$¡Ð°Ñà°‰¥¹…Éä°€Ä°($$‰‘¥™˜ˆ°€ˆ´µ…™Ñ•Èˆ°…™Ñ•È°€ˆ´µ¥ˆ°‘•ÍÑÉÕÑ¥Ù•5¥É…Ñ¥½¹%°($$ˆ´µµ¥É…Ñ¥½¹Ìˆ°µ¥É…Ñ¥½¹Ì°€ˆ´µµ…àµÉ¥Í¬ˆ°€‰Í…™”ˆ°($¤(%ÉÕ¹1$¡Ð°Ñà°‰¥¹…Éä°€À°($$‰‘¥™˜ˆ°€ˆ´µ…™Ñ•Èˆ°…™Ñ•È°€ˆ´µ¥ˆ°‘•ÍÑÉÕÑ¥Ù•5¥É…Ñ¥½¹%°($$ˆ´µµ¥É…Ñ¥½¹Ìˆ°µ¥É…Ñ¥½¹Ì°€ˆ´µµ…àµÉ¥Í¬ˆ°€‰‘•ÍÑÉÕÑ¥Ù”ˆ°($¤(%ÉÕ¹…Ñ…‰…Í•1$¡Ð°Ñà°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°€Ä°($$‰…ÁÁ±äˆ°€ˆ´µµ…àµÉ¥Í¬ˆ°€‰Í…™”ˆ°($¤(%ÉÕ¹…Ñ…‰…Í•1$¡Ð°Ñà°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°€È°($$‰…ÁÁ±äˆ°€ˆ´µµ…àµÉ¥Í¬ˆ°€‰‘•ÍÑÉÕÑ¥Ù”ˆ°($¤(%…ÍÍ•ÉÑ½±Õµ¹á¥ÍÑÌ¡Ð°Ñà°Á½½°°€‰…½Õ¹ÑÌˆ°€‰±•…å}¹½Ñ”ˆ°ÑÉÕ”¤(%¥˜•ÉÈ€èô½Ì¹I•µ½Ù•±°¡™¥±•Á…Ñ ¹)½¥¸¡µ¥É…Ñ¥½¹Ì°‘•ÍÑÉÕÑ¥Ù•5¥É…Ñ¥½¹%¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%ÉÕ¹…Ñ…‰…Í•1$¡Ð°Ñà°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹Ì°€À°€‰ÍÑ…ÑÕÌˆ¤)ô()™Õ¹ŒÉÕ¹…Ñ…‰…Í•1$¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°‰¥¹…Éä°‘…Ñ…‰…Í•UI0°µ¥É…Ñ¥½¹ÌÍÑÉ¥¹œ°•áÁ•Ñ•‘á¥Ð¥¹Ð°½µµ…¹ÍÑÉ¥¹œ°…ÉÕµ•¹ÑÌ€¸¸¹ÍÑÉ¥¹œ¤½µµ…¹‘I•ÍÕ±Ðì(%Ð¹!•±Á•È ¤(%…ÉÌ€èômuÍÑÉ¥¹ì($%½µµ…¹°($$ˆ´µ‘…Ñ…‰…Í”µÕÉ°ˆ°‘…Ñ…‰…Í•UI0°($$ˆ´µµ¥É…Ñ¥½¹Ìˆ°µ¥É…Ñ¥½¹Ì°($$ˆ´µ¡¥ÍÑ½ÉäµÍ¡•µ„ˆ°€‰ÁÕ‰±¥Œˆ°($$ˆ´µ¡¥ÍÑ½ÉäµÑ…‰±”ˆ°€‰}}Í•Ù±Õµ•¹}É}µ¥É…Ñ¥½¹Ìˆ°($$ˆ´µ±½¬µ­•äˆ°€ˆäÄÀØÀÀÄˆ°($$ˆ´µÑ¥µ•½ÕÐˆ°€ˆÌÁÌˆ°(%ô(%…ÉÌ€ô…ÁÁ•¹¡…ÉÌ°…ÉÕµ•¹ÑÌ¸¸¸¤(%É•ÑÕÉ¸ÉÕ¹1$¡Ð°Ñà°‰¥¹…Éä°•áÁ•Ñ•‘á¥Ð°…ÉÌ¸¸¸¤)ô()ÑåÁ”½µµ…¹‘I•ÍÕ±ÐÍÑÉÕÐì(%ÍÑ‘½ÕÐÍÑÉ¥¹œ(%ÍÑ‘•ÉÈÍÑÉ¥¹œ)ô()™Õ¹ŒÉÕ¹1$¡Ð€©Ñ•ÍÑ¥¹œ¹P°Á…É•¹Ð½¹Ñ•áÐ¹½¹Ñ•áÐ°‰¥¹…ÉäÍÑÉ¥¹œ°•áÁ•Ñ•‘á¥Ð¥¹Ð°…ÉÕµ•¹ÑÌ€¸¸¹ÍÑÉ¥¹œ¤½µµ…¹‘I•ÍÕ±Ðì(%Ð¹!•±Á•È ¤(%Ñà°…¹•°€èô½¹Ñ•áÐ¹]¥Ñ¡Q¥µ•½ÕÐ¡Á…É•¹Ð°€ÐÔ©Ñ¥µ”¹M•½¹¤(%‘•™•È…¹•° ¤(%½µµ…¹€èô•á•Œ¹½µµ…¹‘½¹Ñ•áÐ¡Ñà°‰¥¹…Éä°…ÉÕµ•¹ÑÌ¸¸¸¤(%½µµ…¹¹¹Ø€ô½Ì¹¹Ù¥É½¸ ¤(%Ù…ÈÍÑ‘½ÕÐ‰åÑ•Ì¹	Õ™™•È(%Ù…ÈÍÑ‘•ÉÈ‰åÑ•Ì¹	Õ™™•È(%½µµ…¹¹MÑ‘½ÕÐ€ô€™ÍÑ‘½ÕÐ(%½µµ…¹¹MÑ‘•ÉÈ€ô€™ÍÑ‘•ÉÈ(%•ÉÈ€èô½µµ…¹¹IÕ¸ ¤(%•á¥Ñ½‘”€èô€À(%¥˜•ÉÈ€„ô¹¥°ì($%Ù…È•á¥ÑÉÉ½È€©•á•Œ¹á¥ÑÉÉ½È($%¥˜•ÉÉ½ÉÌ¹Ì¡•ÉÈ°€™•á¥ÑÉÉ½È¤ì($$%•á¥Ñ½‘”€ô•á¥ÑÉÉ½È¹á¥Ñ½‘” ¤($%ô•±Í”ì($$%Ð¹…Ñ…±˜ ‰ÉÕ¸€•Ì€•Ìè€•Øˆ°‰¥¹…Éä°ÍÑÉ¥¹Ì¹)½¥¸¡…ÉÕµ•¹ÑÌ°€ˆ€ˆ¤°•ÉÈ¤($%ô(%ô(%¥˜•á¥Ñ½‘”€„ô•áÁ•Ñ•‘á¥Ðì($%Ð¹…Ñ…±˜ ˆ•Ì€•Ì•á¥Ðô•Ý…¹Ðô•‘q¹ÍÑ‘½ÕÐéq¸•Íq¹ÍÑ‘•ÉÈéq¸•Ìˆ°‰¥¹…Éä°ÍÑÉ¥¹Ì¹)½¥¸¡…ÉÕµ•¹ÑÌ°€ˆ€ˆ¤°•á¥Ñ½‘”°•áÁ•Ñ•‘á¥Ð°ÍÑ‘½ÕÐ¹MÑÉ¥¹œ ¤°ÍÑ‘•ÉÈ¹MÑÉ¥¹œ ¤¤(%ô(%É•ÑÕÉ¸½µµ…¹‘I•ÍÕ±ÑíÍÑ‘½ÕÐèÍÑ‘½ÕÐ¹MÑÉ¥¹œ ¤°ÍÑ‘•ÉÈèÍÑ‘•ÉÈ¹MÑÉ¥¹œ ¥ô)ô()™Õ¹ŒÉ•Í•Ñ…Ñ…‰…Í”¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°Á½½°€©ÁáÁ½½°¹A½½°¤ì(%Ð¹!•±Á•È ¤(%µÕÍÑá•Œ¡Ð°Ñà°Á½½°°I=@M!5%a%MQLÁÕ‰±¥ŒM„¤(%µÕÍÑá•Œ¡Ð°Ñà°Á½½°°IQM!5ÁÕ‰±¥€¤)ô()™Õ¹ŒµÕÍÑá•Œ¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°Á½½°€©ÁáÁ½½°¹A½½°°ÍÅ°ÍÑÉ¥¹œ°…ÉÕµ•¹ÑÌ€¸¸¹…¹ä¤ì(%Ð¹!•±Á•È ¤(%¥˜|°•ÉÈ€èôÁ½½°¹á•Œ¡Ñà°ÍÅ°°…ÉÕµ•¹ÑÌ¸¸¸¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô)ô()™Õ¹ŒÁ…­…•¥É•Ñ½Éä¡Ð€©Ñ•ÍÑ¥¹œ¹P¤ÍÑÉ¥¹œì(%Ð¹!•±Á•È ¤(%|°™¥±•¹…µ”°|°½¬€èôÉÕ¹Ñ¥µ”¹…±±•È À¤(%¥˜€…½¬ì($%Ð¹…Ñ…° ‰É•Í½±Ù”É…ÁÀÍ½ÕÉ”‘¥É•Ñ½Éäˆ¤(%ô(%É•ÑÕÉ¸™¥±•Á…Ñ ¹¥È¡™¥±•¹…µ”¤)ô()™Õ¹ŒÝÉ¥Ñ•1½…‘•‘M¹…ÁÍ¡½Ð¡Ð€©Ñ•ÍÑ¥¹œ¹P°‘¥É•Ñ½Éä°¹…µ”ÍÑÉ¥¹œ°±½…™Õ¹Œ ¤€¡µ¥É…Ñ¥½¸¹M¹…ÁÍ¡½Ð°•ÉÉ½È¤¤ÍÑÉ¥¹œì(%Ð¹!•±Á•È ¤(%Í¹…ÁÍ¡½Ð°•ÉÈ€èô±½… ¤(%¥˜•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%‘…Ñ„°•ÉÈ€èôÍ¹…ÁÍ¡½Ð¹5…ÉÍ¡…° ¤(%¥˜•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%Á…Ñ €èô™¥±•Á…Ñ ¹)½¥¸¡‘¥É•Ñ½Éä°¹…µ”¤(%¥˜•ÉÈ€èô½Ì¹]É¥Ñ•¥±”¡Á…Ñ °‘…Ñ„°€Á¼ØÐÐ¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%É•ÑÕÉ¸Á…Ñ )ô()™Õ¹ŒÝÉ¥Ñ•I•¹…µ•Ì¡Ð€©Ñ•ÍÑ¥¹œ¹P°‘¥É•Ñ½ÉäÍÑÉ¥¹œ°½ÁÑ¥½¹Ìµ¥É…Ñ¥½¸¹¥™™=ÁÑ¥½¹Ì¤ÍÑÉ¥¹œì(%Ð¹!•±Á•È ¤(%Á…å±½…€èôÍÑÉÕÐì($%Y•ÉÍ¥½¸¥¹Ð€€€€€€€€€€€€€€©Í½¸è‰Ù•ÉÍ¥½¸‰€($%I•¹…µ•Ìmuµ¥É…Ñ¥½¸¹I•¹…µ”©Í½¸è‰É•¹…µ•Ì‰€(%õíY•ÉÍ¥½¸è€Ä°I•¹…µ•Ìè½ÁÑ¥½¹Ì¹I•¹…µ•Íô(%‘…Ñ„°•ÉÈ€èô©Í½¸¹5…ÉÍ¡…±%¹‘•¹Ð¡Á…å±½…°€ˆˆ°€ˆ€€ˆ¤(%¥˜•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%‘…Ñ„€ô…ÁÁ•¹¡‘…Ñ„°€q¸œ¤(%Á…Ñ €èô™¥±•Á…Ñ ¹)½¥¸¡‘¥É•Ñ½Éä°€‰É•¹…µ•Ì¹©Í½¸ˆ¤(%¥˜•ÉÈ€èô½Ì¹]É¥Ñ•¥±”¡Á…Ñ °‘…Ñ„°€Á¼ØÐÐ¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%É•ÑÕÉ¸Á…Ñ )ô()™Õ¹Œ…ÍÍ•ÉÑ1•…å…Ñ„¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°Á½½°€©ÁáÁ½½°¹A½½°¤ì(%Ð¹!•±Á•È ¤(%Ù…È•µ…¥°ÍÑÉ¥¹œ(%Ù…È¹½Ñ”€©ÍÑÉ¥¹œ(%¥˜•ÉÈ€èôÁ½½°¹EÕ•ÉåI½Ü¡Ñà°M1P±½¥¹}•µ…¥°°±•…å}¹½Ñ”I=4…½Õ¹ÑÌ]!I¥€ô€Å€¤¹M…¸ ™•µ…¥°°€™¹½Ñ”¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%¥˜•µ…¥°€„ô€‰±•…å•á…µÁ±”¹Ñ•ÍÐˆñð¹½Ñ”€ôô¹¥°ñð€©¹½Ñ”€„ô€‰ÁÉ•Í•ÉÙ”µµ”ˆì($%Ð¹…Ñ…±˜ ‰ÕÁÉ…‘•‘…Ñ„•µ…¥°ô•Ä¹½Ñ”ô•Øˆ°•µ…¥°°¹½Ñ”¤(%ô(%Ù…È…½Õ¹Ñ%°Ñ½Ñ…°¥¹ÐØÐ(%¥˜•ÉÈ€èôÁ½½°¹EÕ•ÉåI½Ü¡Ñà°M1P…½Õ¹Ñ}¥°Ñ½Ñ…°I=4½É‘•ÉÌ]!I¥€ô€Å€¤¹M…¸ ™…½Õ¹Ñ%°€™Ñ½Ñ…°¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%¥˜…½Õ¹Ñ%€„ô€ÄñðÑ½Ñ…°€„ô€ÄÈÀÀì($%Ð¹…Ñ…±˜ ‰ÕÁÉ…‘•½É‘•È…½Õ¹Ðô•Ñ½Ñ…°ô•ˆ°…½Õ¹Ñ%°Ñ½Ñ…°¤(%ô)ô()™Õ¹Œ…ÍÍ•ÉÑI•±…Ñ¥½¹á¥ÍÑÌ¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°Á½½°€©ÁáÁ½½°¹A½½°°É•±…Ñ¥½¸ÍÑÉ¥¹œ°•áÁ•Ñ•‰½½°¤ì(%Ð¹!•±Á•È ¤(%Ù…È•á¥ÍÑÌ‰½½°(%¥˜•ÉÈ€èôÁ½½°¹EÕ•ÉåI½Ü¡Ñà°M1Pa%MQL€ ($%M1P€ÄI=4Á}±…ÍÌŒ)=%8Á}¹…µ•ÍÁ…”¸=8¸¹½¥€ôŒ¹É•±¹…µ•ÍÁ…”($%]!I¸¹¹ÍÁ¹…µ”€ô€ÁÕ‰±¥Œœ9Œ¹É•±¹…µ”€ô€Ä($¥€°É•±…Ñ¥½¸¤¹M…¸ ™•á¥ÍÑÌ¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%¥˜•á¥ÍÑÌ€„ô•áÁ•Ñ•ì($%Ð¹…Ñ…±˜ ‰É•±…Ñ¥½¸€•Ä•á¥ÍÑÌô•ÐÝ…¹Ðô•Ðˆ°É•±…Ñ¥½¸°•á¥ÍÑÌ°•áÁ•Ñ•¤(%ô)ô()™Õ¹Œ…ÍÍ•ÉÑ½±Õµ¹á¥ÍÑÌ¡Ð€©Ñ•ÍÑ¥¹œ¹P°Ñà½¹Ñ•áÐ¹½¹Ñ•áÐ°Á½½°€©ÁáÁ½½°¹A½½°°Ñ…‰±”°½±Õµ¸ÍÑÉ¥¹œ°•áÁ•Ñ•‰½½°¤ì(%Ð¹!•±Á•È ¤(%Ù…È•á¥ÍÑÌ‰½½°(%¥˜•ÉÈ€èôÁ½½°¹EÕ•ÉåI½Ü¡Ñà°M1Pa%MQL€ ($%M1P€ÄI=4¥¹™½Éµ…Ñ¥½¹}Í¡•µ„¹½±Õµ¹Ì($%]!IÑ…‰±•}Í¡•µ„€ô€ÁÕ‰±¥Œœ9Ñ…‰±•}¹…µ”€ô€Ä9½±Õµ¹}¹…µ”€ô€È($¥€°Ñ…‰±”°½±Õµ¸¤¹M…¸ ™•á¥ÍÑÌ¤ì•ÉÈ€„ô¹¥°ì($%Ð¹…Ñ…°¡•ÉÈ¤(%ô(%¥˜•á¥ÍÑÌ€„ô•áÁ•Ñ•ì($%Ð¹…Ñ…±˜ ‰½±Õµ¸€•Ì¸•Ì•á¥ÍÑÌô•ÐÝ…¹Ðô•Ðˆ°Ñ…‰±”°½±Õµ¸°•á¥ÍÑÌ°•áÁ•Ñ•¤(%ô)ô()™Õ¹Œá…µÁ±•}É•±•…Í•…¹‘¥‘…Ñ•]½É­™±½Ü ¤ì(%™µÐ¹AÉ¥¹Ñ±¸ ‰•¹•É…Ñ”€´ø‘¥™˜€´øÙ…±¥‘…Ñ”€´ø…ÁÁ±ä€´øÑåÁ•ÉÕ¹Ñ¥µ”€´øÉ½±±‰…¬€´øÉ•½Ù•Éäˆ¤($¼¼=ÕÑÁÕÐè•¹•É…Ñ”€´ø‘¥™˜€´øÙ…±¥‘…Ñ”€´ø…ÁÁ±ä€´øÑåÁ•ÉÕ¹Ñ¥µ”€´øÉ½±±‰…¬€´øÉ•½Ù•Éä)ô
