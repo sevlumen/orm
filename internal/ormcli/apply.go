@@ -49,11 +49,13 @@ func (app *App) runApply(ctx context.Context, args []string) error {
 	}
 	defer pool.Close()
 	defer cancel()
-	applied, err := migrationRunner.Apply(commandContext, resolved.directory)
+
+	applied, err := migrationRunner.Apply(commandContext)
 	if err != nil {
 		return protectError(err, resolved.secrets)
 	}
-	result := applyResult{Applied: nonNilStrings(applied), Count: len(applied)}
-	human := fmt.Sprintf("applied %d migrations\n", len(applied))
+	ids := resultIDs(applied)
+	result := applyResult{Applied: ids, Count: len(ids)}
+	human := fmt.Sprintf("applied %d migrations\n", len(ids))
 	return app.writeResult(flags.jsonOutput, "apply", result, human)
 }
