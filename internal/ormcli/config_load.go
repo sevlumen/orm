@@ -10,15 +10,19 @@ import (
 )
 
 func loadConfig(path string) (Config, error) {
-	config := defaultConfig()
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return config, nil
+		return defaultConfig(), nil
 	}
 	data, err := readLimited(path, maximumConfigBytes)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	return parseConfig(data)
+}
+
+func parseConfig(data []byte) (Config, error) {
+	config := defaultConfig()
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var parsed Config

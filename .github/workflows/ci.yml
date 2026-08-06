@@ -19,10 +19,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go }}
           cache: false
@@ -31,6 +31,8 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+          go mod verify
+          go list -mod=readonly -deps ./... >/dev/null
 
       - name: Verify formatting
         shell: bash
@@ -45,11 +47,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Cross-compile generator for Windows
+      - name: Cross-compile commands for Windows
         if: matrix.go == '1.25.x'
         run: |
           GOOS=windows GOARCH=amd64 go test -c ./generator -o /tmp/generator.test.exe
           GOOS=windows GOARCH=amd64 go test -c ./cmd/ormgen -o /tmp/ormgen.test.exe
+          GOOS=windows GOARCH=amd64 go test -c ./cmd/orm -o /tmp/orm.test.exe
 
       - name: Verify allocation budgets
         run: go test ./postgres/query -run '^TestTypedHotPathAllocationBudgets$' -count=1
@@ -67,17 +70,60 @@ jobs:
           -benchtime=100x
           -count=1
 
+  security:
+    name: Security and compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Verify dependencies
+        run: |
+          go mod download
+          go mod verify
+          go list -mod=readonly -deps ./... >/dev/null
+
+      - name: Run vulnerability analysis
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...
+
+      - name: Run fuzz smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./entity -run '^$' -fuzz '^FuzzParseTag$' -fuzztime=2s
+          go test ./migration -run '^$' -fuzz '^FuzzParseSnapshot$' -fuzztime=2s
+          go test ./migration -run '^$' -fuzz '^FuzzRenameValidate$' -fuzztime=2s
+          go test ./migration/artifact -run '^$' -fuzz '^FuzzParseManifest$' -fuzztime=2s
+          go test ./internal/ormcli -run '^$' -fuzz '^FuzzParseConfig$' -fuzztime=2s
+          go test ./postgres/query -run '^$' -fuzz '^FuzzSelectValueRemainsParameterized$' -fuzztime=2s
+          go test ./postgres/query -run '^$' -fuzz '^FuzzMetadataValidationNeverPanics$' -fuzztime=2s
+          go test ./postgres/runner -run '^$' -fuzz '^FuzzValidateMigrationScript$' -fuzztime=2s
+          go test ./postgres/runner -run '^$' -fuzz '^FuzzStatementPrefixesBounded$' -fuzztime=2s
+
+      - name: Verify public API surface
+        run: go run ./cmd/apicheck -baseline api/v1
+
   postgres:
-    name: PostgreSQL ${{ matrix.postgres }}
+    name: PostgreSQL ${{ matrix.version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        postgres: ["14", "18"]
+        include:
+          - version: "14"
+            image: postgres:14@sha256:2f439458ab6a57a925825ae14f9d06910e4fe4a41c8d4a0ae06397e65b707e1b
+          - version: "18"
+            image: postgres:18@sha256:d129b9577d274bb96cbd44d902bdeb1b935c89247d161241e9154cba64e13df4
 
     services:
       postgres:
-        image: postgres:${{ matrix.postgres }}
+        image: ${{ matrix.image }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -95,22 +141,24 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25.x"
           cache: false
 
       - name: Download dependencies
-        run: go mod download
+        run: |
+          go mod download
+          go mod verify
 
       - name: Run PostgreSQL integration tests
         run: go test -race ./postgres/... -count=1
 
       - name: Run PostgreSQL benchmark smoke
-        if: matrix.postgres == '18'
+        if: matrix.version == '18'
         run: >-
           go test ./postgres/query
           -run '^$'

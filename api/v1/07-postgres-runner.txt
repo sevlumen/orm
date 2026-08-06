@@ -1,0 +1,55 @@
+package github.com/sevlumen/orm/postgres/runner
+
+const (
+	StatePending MigrationState = "pending"
+	StateApplied MigrationState = "applied"
+)
+
+func (e *MigrationError) Error() string
+
+func (e *MigrationError) Unwrap() error
+
+func (r *Runner) Apply(ctx context.Context) ([]Result, error)
+
+func (r *Runner) Rollback(ctx context.Context, count int) ([]Result, error)
+
+func (r *Runner) Status(ctx context.Context) ([]Status, error)
+
+func New(pool *pgxpool.Pool, config Config) (*Runner, error)
+
+type Config struct {
+	MigrationsDir string
+	HistorySchema string
+	HistoryTable  string
+	LockKey       int64
+	MaximumRisk   migration.Risk
+}
+
+type MigrationError struct {
+	ID        string
+	Direction string
+	Stage     string
+	Err       error
+}
+
+type MigrationState string
+
+type Result struct {
+	ID            string
+	Checksum      string
+	ExecutionTime time.Duration
+}
+
+type Runner struct {
+	// contains filtered or unexported fields
+}
+
+type Status struct {
+	ID            string
+	Checksum      string
+	Risk          string
+	State         MigrationState
+	AppliedAt     *time.Time
+	ExecutionTime time.Duration
+}
+

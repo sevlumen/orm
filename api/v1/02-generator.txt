@@ -1,0 +1,19 @@
+package github.com/sevlumen/orm/generator
+
+func (e *StaleError) Error() string
+
+func Generate(config Config) ([]byte, error)
+
+func Write(config Config) error
+
+type Config struct {
+	Dir    string
+	Types  []string
+	Output string
+	Check  bool
+}
+
+type StaleError struct {
+	Path string
+}
+

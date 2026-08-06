@@ -1,0 +1,85 @@
+package github.com/sevlumen/orm/schema
+
+const (
+	NoAction   ReferentialAction = "NO ACTION"
+	Restrict   ReferentialAction = "RESTRICT"
+	Cascade    ReferentialAction = "CASCADE"
+	SetNull    ReferentialAction = "SET NULL"
+	SetDefault ReferentialAction = "SET DEFAULT"
+)
+
+func (s Schema) Validate() error
+
+type CheckConstraint struct {
+	Name       string `json:"name"`
+	Expression string `json:"expression"`
+}
+
+type Column struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	PrimaryKey bool   `json:"primaryKey,omitempty"`
+	Unique     bool   `json:"unique,omitempty"`
+	Default    string `json:"default,omitempty"`
+	Generated  string `json:"generated,omitempty"`
+}
+
+type EnumType struct {
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
+}
+
+type Extension struct {
+	Name string `json:"name"`
+}
+
+type ForeignKey struct {
+	Name              string            `json:"name"`
+	Columns           []string          `json:"columns"`
+	ReferencedTable   string            `json:"referencedTable"`
+	ReferencedColumns []string          `json:"referencedColumns"`
+	OnDelete          ReferentialAction `json:"onDelete,omitempty"`
+	OnUpdate          ReferentialAction `json:"onUpdate,omitempty"`
+	Deferrable        bool              `json:"deferrable,omitempty"`
+	InitiallyDeferred bool              `json:"initiallyDeferred,omitempty"`
+}
+
+type Index struct {
+	Name       string   `json:"name"`
+	Columns    []string `json:"columns,omitempty"`
+	Expression string   `json:"expression,omitempty"`
+	Include    []string `json:"include,omitempty"`
+	Unique     bool     `json:"unique,omitempty"`
+	Method     string   `json:"method,omitempty"`
+	Predicate  string   `json:"predicate,omitempty"`
+}
+
+type PrimaryKey struct {
+	Name    string   `json:"name"`
+	Columns []string `json:"columns"`
+}
+
+type ReferentialAction string
+
+type Schema struct {
+	Extensions []Extension `json:"extensions,omitempty"`
+	Enums      []EnumType  `json:"enums,omitempty"`
+	Tables     []Table     `json:"tables"`
+}
+
+type Table struct {
+	Name              string             `json:"name"`
+	Columns           []Column           `json:"columns"`
+	PrimaryKey        *PrimaryKey        `json:"primaryKey,omitempty"`
+	UniqueConstraints []UniqueConstraint `json:"uniqueConstraints,omitempty"`
+	Checks            []CheckConstraint  `json:"checks,omitempty"`
+	ForeignKeys       []ForeignKey       `json:"foreignKeys,omitempty"`
+	Indexes           []Index            `json:"indexes,omitempty"`
+}
+
+type UniqueConstraint struct {
+	Name    string   `json:"name"`
+	Columns []string `json:"columns"`
+}
+

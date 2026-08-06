@@ -69,7 +69,7 @@ func (s Snapshot) Marshal() ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// ParseSnapshot decodes a snapshot strictly and rejects unknown fields.
+// ParseSnapshot decodes, validates, and canonicalizes a snapshot strictly.
 func ParseSnapshot(data []byte) (Snapshot, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -83,7 +83,11 @@ func ParseSnapshot(data []byte) (Snapshot, error) {
 	if err := snapshot.Validate(); err != nil {
 		return Snapshot{}, err
 	}
-	return snapshot, nil
+	canonical, err := NewSnapshot(snapshot.Schema)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("migration: canonicalize snapshot: %w", err)
+	}
+	return canonical, nil
 }
 
 // Validate checks the snapshot format version and schema invariants.

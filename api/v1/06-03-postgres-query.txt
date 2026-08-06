@@ -1,0 +1,105 @@
+type Event struct {
+	Operation    string
+	SQL          string
+	StartedAt    time.Time
+	Duration     time.Duration
+	RowsAffected int64
+	Err          error
+}
+
+type ExecutionError struct {
+	Operation string
+	SQL       string
+	Err       error
+}
+
+type Executor struct {
+	// contains filtered or unexported fields
+}
+
+type ExecutorOption func(*Executor) error
+
+type InsertBuilder[T any] struct {
+	// contains filtered or unexported fields
+}
+
+type KeyFunc[T any, K comparable] func(T) (key K, present bool)
+
+type ManyRelation[S any, T any, K comparable] struct {
+	// contains filtered or unexported fields
+}
+
+type ManyResult[T any] struct {
+	Values     []T
+	KeyPresent bool
+}
+
+type Observer interface {
+	Before(context.Context, Event)
+	After(context.Context, Event)
+}
+
+type OneRelation[S any, T any, K comparable] struct {
+	// contains filtered or unexported fields
+}
+
+type OneResult[T any] struct {
+	Value      T
+	KeyPresent bool
+	Found      bool
+}
+
+type Order[T any] struct {
+	// contains filtered or unexported fields
+}
+
+type Predicate[T any] struct {
+	// contains filtered or unexported fields
+}
+
+type RelationError struct {
+	Relation string
+	Chunk    int
+	Err      error
+}
+
+type RelationOption func(*relationConfig) error
+
+type RelationQuery[T any, K comparable] func(keys []K) SelectBuilder[T]
+
+type RowScanner interface {
+	Scan(dest ...any) error
+}
+
+type ScanFunc[T any] func(RowScanner) (T, error)
+
+type SelectBuilder[T any] struct {
+	// contains filtered or unexported fields
+}
+
+type Statement struct {
+	SQL  string
+	Args []any
+}
+
+type Table[T any] struct {
+	// contains filtered or unexported fields
+}
+
+type TransactionError struct {
+	Stage string
+	Err   error
+}
+
+type TrustedSQL string
+
+type UpdateBuilder[T any] struct {
+	// contains filtered or unexported fields
+}
+
+var ErrMultipleRows = errors.New("query: expected exactly one returned row")
+
+var ErrRelationMultipleRows = errors.New("query: one relation returned multiple target rows")
+
+var ErrRelationUnexpectedKey = errors.New("query: relation query returned an unexpected target key")
+

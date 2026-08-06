@@ -1,0 +1,113 @@
+package github.com/sevlumen/orm/migration
+
+const (
+	CreateExtension      OperationKind = "create_extension"
+	CreateEnum           OperationKind = "create_enum"
+	DropEnum             OperationKind = "drop_enum"
+	CreateTable          OperationKind = "create_table"
+	DropTable            OperationKind = "drop_table"
+	AddColumn            OperationKind = "add_column"
+	DropColumn           OperationKind = "drop_column"
+	AlterColumn          OperationKind = "alter_column"
+	CreateIndex          OperationKind = "create_index"
+	DropIndex            OperationKind = "drop_index"
+	AddUniqueConstraint  OperationKind = "add_unique_constraint"
+	DropUniqueConstraint OperationKind = "drop_unique_constraint"
+	AddCheckConstraint   OperationKind = "add_check_constraint"
+	DropCheckConstraint  OperationKind = "drop_check_constraint"
+	AddForeignKey        OperationKind = "add_foreign_key"
+	DropForeignKey       OperationKind = "drop_foreign_key"
+)
+
+const (
+	RenameTable      RenameKind = "table"
+	RenameColumn     RenameKind = "column"
+	RenameIndex      RenameKind = "index"
+	RenameConstraint RenameKind = "constraint"
+	RenameEnum       RenameKind = "enum"
+)
+
+const (
+	RiskSafe Risk = iota
+	RiskReview
+	RiskDestructive
+)
+
+const RenameObject OperationKind = "rename_object"
+
+const SnapshotVersion = 1
+
+func (p Plan) MaxRisk() Risk
+
+func (p Plan) Validate() error
+
+func (p Plan) Warnings() []string
+
+func (r Rename) Validate() error
+
+func (r Risk) String() string
+
+func (s Snapshot) Marshal() ([]byte, error)
+
+func (s Snapshot) Validate() error
+
+func Diff(before, after Snapshot) (Plan, error)
+
+func DiffWithOptions(before, after Snapshot, options DiffOptions) (Plan, error)
+
+func EmptySnapshot() Snapshot
+
+func NewSnapshot(model schema.Schema) (Snapshot, error)
+
+func ParseSnapshot(data []byte) (Snapshot, error)
+
+type DiffOptions struct {
+	Renames []Rename
+}
+
+type Operation struct {
+	Kind             OperationKind
+	Table            string
+	Rename           *Rename
+	BeforeExtension  *schema.Extension
+	AfterExtension   *schema.Extension
+	BeforeEnum       *schema.EnumType
+	AfterEnum        *schema.EnumType
+	BeforeTable      *schema.Table
+	AfterTable       *schema.Table
+	BeforeColumn     *schema.Column
+	AfterColumn      *schema.Column
+	BeforeIndex      *schema.Index
+	AfterIndex       *schema.Index
+	BeforeUnique     *schema.UniqueConstraint
+	AfterUnique      *schema.UniqueConstraint
+	BeforeCheck      *schema.CheckConstraint
+	AfterCheck       *schema.CheckConstraint
+	BeforeForeignKey *schema.ForeignKey
+	AfterForeignKey  *schema.ForeignKey
+	Risk             Risk
+	Reason           string
+}
+
+type OperationKind string
+
+type Plan struct {
+	Operations []Operation
+}
+
+type Rename struct {
+	Kind  RenameKind
+	Table string
+	From  string
+	To    string
+}
+
+type RenameKind string
+
+type Risk uint8
+
+type Snapshot struct {
+	Version int           `json:"version"`
+	Schema  schema.Schema `json:"schema"`
+}
+
