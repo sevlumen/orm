@@ -30,6 +30,12 @@ func NewSnapshot(model schema.Schema) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	canonical := cloneSchema(model)
+	sort.Slice(canonical.Extensions, func(i, j int) bool {
+		return canonical.Extensions[i].Name < canonical.Extensions[j].Name
+	})
+	sort.Slice(canonical.Enums, func(i, j int) bool {
+		return canonical.Enums[i].Name < canonical.Enums[j].Name
+	})
 	sort.Slice(canonical.Tables, func(i, j int) bool {
 		return canonical.Tables[i].Name < canonical.Tables[j].Name
 	})
@@ -102,7 +108,14 @@ func ensureEOF(decoder *json.Decoder) error {
 }
 
 func cloneSchema(model schema.Schema) schema.Schema {
-	result := schema.Schema{Tables: make([]schema.Table, len(model.Tables))}
+	result := schema.Schema{
+		Extensions: append([]schema.Extension(nil), model.Extensions...),
+		Enums:      append([]schema.EnumType(nil), model.Enums...),
+		Tables:     make([]schema.Table, len(model.Tables)),
+	}
+	for i := range result.Enums {
+		result.Enums[i].Values = append([]string(nil), model.Enums[i].Values...)
+	}
 	for i, table := range model.Tables {
 		result.Tables[i] = table
 		result.Tables[i].Columns = append([]schema.Column(nil), table.Columns...)
