@@ -55,6 +55,7 @@ const (
 type Operation struct {
 	Kind             OperationKind
 	Table            string
+	Rename           *Rename
 	BeforeExtension  *schema.Extension
 	AfterExtension   *schema.Extension
 	BeforeEnum       *schema.EnumType
@@ -102,6 +103,11 @@ func validateOperation(operation Operation) error {
 	}
 
 	switch operation.Kind {
+	case RenameObject:
+		if operation.Rename == nil {
+			return fmt.Errorf("rename intent is required")
+		}
+		return operation.Rename.Validate()
 	case CreateExtension:
 		if operation.AfterExtension == nil {
 			return fmt.Errorf("after extension is required")

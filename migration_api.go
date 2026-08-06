@@ -19,11 +19,17 @@ func BuildSnapshot(entities ...any) (migration.Snapshot, error) {
 
 // PostgreSQLMigration compares a previous snapshot with current entities.
 func PostgreSQLMigration(before migration.Snapshot, entities ...any) (postgres.MigrationSQL, migration.Snapshot, error) {
+	return PostgreSQLMigrationWithOptions(before, migration.DiffOptions{}, entities...)
+}
+
+// PostgreSQLMigrationWithOptions compares a previous snapshot with current
+// entities while applying explicit rename intent before normal diff planning.
+func PostgreSQLMigrationWithOptions(before migration.Snapshot, options migration.DiffOptions, entities ...any) (postgres.MigrationSQL, migration.Snapshot, error) {
 	after, err := BuildSnapshot(entities...)
 	if err != nil {
 		return postgres.MigrationSQL{}, migration.Snapshot{}, err
 	}
-	plan, err := migration.Diff(before, after)
+	plan, err := migration.DiffWithOptions(before, after, options)
 	if err != nil {
 		return postgres.MigrationSQL{}, migration.Snapshot{}, fmt.Errorf("orm: plan migration: %w", err)
 	}
