@@ -1,0 +1,72 @@
+func (c Column[T, V]) Set(value V) Assignment[T]
+
+func (c Column[T, V]) SetSQL(expression TrustedSQL) Assignment[T]
+
+func (c Column[T, V]) Table() *Table[T]
+
+func (e *ExecutionError) Error() string
+
+func (e *ExecutionError) Unwrap() error
+
+func (e *Executor) Exec(ctx context.Context, operation string, statement Statement) (pgconn.CommandTag, error)
+
+func (e *RelationError) Error() string
+
+func (e *RelationError) Unwrap() error
+
+func (e *TransactionError) Error() string
+
+func (e *TransactionError) Unwrap() error
+
+func (relation ManyRelation[S, T, K]) Load(ctx context.Context, executor *Executor, sources []S) ([]ManyResult[T], error)
+
+func (relation OneRelation[S, T, K]) Load(ctx context.Context, executor *Executor, sources []S) ([]OneResult[T], error)
+
+func (t *Table[T]) Name() string
+
+func (t *Table[T]) Scan(row RowScanner) (T, error)
+
+func And[T any](predicates ...Predicate[T]) Predicate[T]
+
+func DeleteAll[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) ([]T, error)
+
+func DeleteOne[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) (T, error)
+
+func Delete[T any](table *Table[T]) DeleteBuilder[T]
+
+func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgconn.CommandTag, err error)
+
+func ExecDelete[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) (pgconn.CommandTag, error)
+
+func ExecInsert[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) (pgconn.CommandTag, error)
+
+func ExecUpdate[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) (pgconn.CommandTag, error)
+
+func FetchAll[T any](ctx context.Context, executor *Executor, builder SelectBuilder[T]) ([]T, error)
+
+func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...SelectBuilder[T]) (result [][]T, err error)
+
+func FetchOne[T any](ctx context.Context, executor *Executor, builder SelectBuilder[T]) (T, error)
+
+func FetchOptional[T any](ctx context.Context, executor *Executor, builder SelectBuilder[T]) (T, bool, error)
+
+func InTransaction(
+	ctx context.Context,
+	beginner Beginner,
+	options pgx.TxOptions,
+	callback func(*Executor) error,
+	executorOptions ...ExecutorOption,
+) (err error)
+
+func InsertAll[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) ([]T, error)
+
+func InsertOne[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) (T, error)
+
+func InsertOnlyColumn() ColumnOptions
+
+func Insert[T any](table *Table[T]) InsertBuilder[T]
+
+func MutableColumn() ColumnOptions
+
+func NewBatch() Batch
+
