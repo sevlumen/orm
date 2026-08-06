@@ -7,15 +7,15 @@ import (
 )
 
 type nativeEntity struct {
-	Payload    json.RawMessage
-	Metadata   map[string]any
-	Tags       []string
-	Scores     []int64
-	Moments    []time.Time
-	Blobs      [][]byte
-	Raw        []byte
-	FirstName  string
-	LastName   string
+	Payload     json.RawMessage
+	Metadata    map[string]any
+	Tags        []string
+	Scores      []int64
+	Moments     []time.Time
+	Blobs       [][]byte
+	Raw         []byte
+	FirstName   string
+	LastName    string
 	DisplayName string `orm:"generated:first_name || ' ' || last_name"`
 }
 
@@ -79,5 +79,16 @@ func TestParseRejectsGeneratedDefaultCombination(t *testing.T) {
 	t.Parallel()
 	if _, err := Parse(invalidGeneratedEntity{}); err == nil {
 		t.Fatal("expected generated/default error")
+	}
+}
+
+type invalidJSONMapEntity struct {
+	Value map[int]string
+}
+
+func TestParseRejectsNonStringJSONMapKeys(t *testing.T) {
+	t.Parallel()
+	if _, err := Parse(invalidJSONMapEntity{}); err == nil {
+		t.Fatal("expected unsupported JSON map key error")
 	}
 }
