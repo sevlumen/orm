@@ -25,10 +25,12 @@ Stable benchmark names:
 
 `BenchmarkRowScan` compares direct destination scanning with `Table.Scan` using the same direct scanner and destination fields. The typed path adds table scanner dispatch but does not use reflection.
 
-Every benchmark calls `ReportAllocs`. `TestTypedHotPathAllocationBudgets` enforces deterministic budgets based on current evidence while retaining a small compiler/runtime margin:
+Every benchmark calls `ReportAllocs`. `TestTypedHotPathAllocationBudgets` runs in a dedicated non-race process on both supported Go toolchains and enforces budgets based on current evidence while retaining a small compiler/runtime margin:
 
 - typed SELECT rendering: at most 36 allocations per build;
-- typed table scanning: at most 2 allocations per row.
+- typed table scanning: at most 4 allocations per row.
+
+The benchmark loop currently reports one scanner allocation per operation, while `testing.AllocsPerRun` reports three because its closure/interface escape context differs from the benchmark loop. The budget protects the dedicated regression measurement and leaves one allocation of margin; the benchmark output remains the comparison baseline.
 
 Do not replace these budgets with nanosecond thresholds in unit tests. Tighten them after repeated measurements and implementation improvements; raise them only with benchmark evidence and an explicit review of the added allocations.
 
