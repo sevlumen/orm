@@ -20,6 +20,7 @@ type Table struct {
 	PrimaryKey        *PrimaryKey        `json:"primaryKey,omitempty"`
 	UniqueConstraints []UniqueConstraint `json:"uniqueConstraints,omitempty"`
 	Checks            []CheckConstraint  `json:"checks,omitempty"`
+	ForeignKeys       []ForeignKey       `json:"foreignKeys,omitempty"`
 	Indexes           []Index            `json:"indexes,omitempty"`
 }
 
@@ -66,16 +67,17 @@ type Index struct {
 
 // Validate checks invariants before SQL rendering or migration planning.
 func (s Schema) Validate() error {
-	seenTables := map[string]struct{}{}
+	tables := make(map[string]Table, len(s.Tables))
 	relationNames := map[string]string{}
+
 	for _, table := range s.Tables {
 		if err := validateIdentifier("table", table.Name); err != nil {
 			return err
 		}
-		if _, exists := seenTables[table.Name]; exists {
+		if _, exists := tables[table.Name]; exists {
 			return fmt.Errorf("schema: duplicate table %q", table.Name)
 		}
-		seenTables[table.Name] = struct{}{}
+		tables[table.Name] = table
 		if previous, exists := relationNames[table.Name]; exists {
 			return fmt.Errorf("schema: table %q conflicts with %s", table.Name, previous)
 		}
@@ -150,6 +152,15 @@ func (s Schema) Validate() error {
 			}
 			constraintNames[check.Name] = "check constraint"
 		}
+		for _, foreignKey := range table.ForeignKeys {
+			if err := validateForeignKeyShape(table.Name, foreignKey, seenColumns); err != nil {
+				return err
+			}
+			if previous, exists := constraintNames[foreignKey.Name]; exists {
+				return fmt.Errorf("schema: constraint %q on table %q duplicates %s", foreignKey.Name, table.Name, previous)
+			}
+			constraintNames[foreignKey.Name] = "foreign key"
+		}
 		for _, index := range table.Indexes {
 			if err := validateIndex(table.Name, index, seenColumns); err != nil {
 				return err
@@ -160,7 +171,8 @@ func (s Schema) Validate() error {
 			relationNames[index.Name] = "another relation"
 		}
 	}
-	return nil
+
+	return validateForeignKeyReferences(s.Tables, tables)
 }
 
 func validateIdentifier(kind, value string) error {
@@ -242,4 +254,16 @@ func validateIndex(table string, index Index, available map[string]Column) error
 		seen[column] = struct{}{}
 	}
 	return nil
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
