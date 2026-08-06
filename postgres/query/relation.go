@@ -135,7 +135,7 @@ func (relation ManyRelation[S, T, K]) Load(ctx context.Context, executor *Execut
 	if !relation.configured {
 		return nil, fmt.Errorf("query: many relation is not configured")
 	}
-	keys, positions, results, err := collectSourceKeys(relation.name, sources, relation.sourceKey)
+	keys, positions, results, err := collectSourceKeys[S, T, K](relation.name, sources, relation.sourceKey)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +180,7 @@ func (relation ManyRelation[S, T, K]) Load(ctx context.Context, executor *Execut
 	for key, indexes := range positions {
 		values := grouped[key]
 		for _, index := range indexes {
-			results[index].Values = append([]T(nil), values...)
+			results[index].Values = cloneRelationValues(values)
 		}
 	}
 	return results, nil
@@ -224,7 +224,7 @@ func (relation OneRelation[S, T, K]) Load(ctx context.Context, executor *Executo
 	if !relation.configured {
 		return nil, fmt.Errorf("query: one relation is not configured")
 	}
-	keys, positions, manyResults, err := collectSourceKeys(relation.name, sources, relation.sourceKey)
+	keys, positions, manyResults, err := collectSourceKeys[S, T, K](relation.name, sources, relation.sourceKey)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +332,7 @@ func collectSourceKeys[S any, T any, K comparable](
 			continue
 		}
 		results[index].KeyPresent = true
-		results[index].Values = []T{}
+		results[index].Values = make([]T, 0)
 		if _, exists := positions[key]; !exists {
 			keys = append(keys, key)
 		}
@@ -365,6 +365,13 @@ func extractRelationKey[T any, K comparable](name, kind string, extract KeyFunc[
 	}()
 	key, present = extract(value)
 	return key, present, nil
+}
+
+func cloneRelationValues[T any](values []T) []T {
+	if len(values) == 0 {
+		return make([]T, 0)
+	}
+	return append([]T(nil), values...)
 }
 
 func relationFailure(name string, chunk int, err error) error {
