@@ -75,6 +75,7 @@ func TestNativeMigrationAgainstPostgreSQL(t *testing.T) {
         (status, payload, tags, first_name, last_name)
         VALUES ('new', '{"source":"test"}'::jsonb, ARRAY['go', 'orm'], 'Ada', 'Lovelace')
         RETURNING display_name, pg_typeof(payload)::text, tags[2], status::text`
+	insert = strings.ReplaceAll(insert, `\"`, `"`)
 	if err := pool.QueryRow(ctx, insert).Scan(&displayName, &payloadType, &secondTag, &status); err != nil {
 		t.Fatal(err)
 	}
