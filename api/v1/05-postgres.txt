@@ -1,0 +1,13 @@
+package github.com/sevlumen/orm/postgres
+
+func RenderCreateSchema(model schema.Schema) (string, error)
+
+func RenderMigration(plan migration.Plan) (MigrationSQL, error)
+
+type MigrationSQL struct {
+	Up       string
+	Down     string
+	Risk     migration.Risk
+	Warnings []string
+}
+
