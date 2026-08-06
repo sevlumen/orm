@@ -54,11 +54,13 @@ func (app *App) runRollback(ctx context.Context, args []string) error {
 	}
 	defer pool.Close()
 	defer cancel()
-	rolledBack, err := migrationRunner.Rollback(commandContext, resolved.directory, steps)
+
+	rolledBack, err := migrationRunner.Rollback(commandContext, steps)
 	if err != nil {
 		return protectError(err, resolved.secrets)
 	}
-	result := rollbackResult{RolledBack: nonNilStrings(rolledBack), Count: len(rolledBack)}
-	human := fmt.Sprintf("rolled back %d migrations\n", len(rolledBack))
+	ids := resultIDs(rolledBack)
+	result := rollbackResult{RolledBack: ids, Count: len(ids)}
+	human := fmt.Sprintf("rolled back %d migrations\n", len(ids))
 	return app.writeResult(flags.jsonOutput, "rollback", result, human)
 }
