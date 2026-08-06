@@ -15,15 +15,15 @@ import (
 )
 
 type databaseFlags struct {
-	configPath         string
-	databaseURL        optionalString
+	configPath          string
+	databaseURL         optionalString
 	migrationsDirectory optionalString
-	historySchema      optionalString
-	historyTable       optionalString
-	lockKey            optionalInt64
-	maximumRisk        optionalString
-	timeout            optionalString
-	jsonOutput         bool
+	historySchema       optionalString
+	historyTable        optionalString
+	lockKey             optionalInt64
+	maximumRisk         optionalString
+	timeout             optionalString
+	jsonOutput          bool
 }
 
 func (flags *databaseFlags) bind(set *flag.FlagSet, includeRisk bool) {
@@ -116,6 +116,7 @@ func (app *App) resolveDatabase(flags databaseFlags) (resolvedDatabase, error) {
 		url:       databaseURL,
 		timeout:   timeout,
 		runner: runner.Config{
+			MigrationsDir: migrationConfig.Directory,
 			HistorySchema: migrationConfig.HistorySchema,
 			HistoryTable:  migrationConfig.HistoryTable,
 			LockKey:       migrationConfig.LockKey,
