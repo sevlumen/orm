@@ -44,7 +44,13 @@ func TestORMCLIRejectsInjectedHistoryIdentifier(t *testing.T) {
 	assertInjectionTableExists(t, ctx, pool, sentinel)
 
 	var maliciousExists bool
-	if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", maliciousHistory).Scan(&maliciousExists); err != nil {
+	const catalogQuery = `SELECT EXISTS (
+		SELECT 1
+		FROM pg_class AS c
+		JOIN pg_namespace AS n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public' AND c.relname = $1
+	)`
+	if err := pool.QueryRow(ctx, catalogQuery, maliciousHistory).Scan(&maliciousExists); err != nil {
 		t.Fatal(err)
 	}
 	if maliciousExists {
