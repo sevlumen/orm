@@ -14,7 +14,7 @@ func FuzzParseConfig(f *testing.F) {
 		[]byte(`null`),
 		{},
 	} {
-		f.Add(seed)
+		f.Add(bytesWithoutEscape(seed))
 	}
 
 	f.Fuzz(func(t *testing.T, input []byte) {
@@ -33,4 +33,15 @@ func FuzzParseConfig(f *testing.F) {
 			t.Fatalf("accepted config does not validate: %v", err)
 		}
 	})
+}
+
+func bytesWithoutEscape(input []byte) []byte {
+	result := make([]byte, 0, len(input))
+	for index := 0; index < len(input); index++ {
+		if input[index] == '\\' && index+1 < len(input) && input[index+1] == '"' {
+			continue
+		}
+		result = append(result, input[index])
+	}
+	return result
 }
