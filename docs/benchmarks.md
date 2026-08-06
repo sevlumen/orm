@@ -25,12 +25,12 @@ Stable benchmark names:
 
 `BenchmarkRowScan` compares direct destination scanning with `Table.Scan` using the same direct scanner and destination fields. The typed path adds table scanner dispatch but does not use reflection.
 
-Every benchmark calls `ReportAllocs`. `TestTypedHotPathAllocationBudgets` adds deliberately generous deterministic budgets to catch material allocation regressions without turning normal compiler improvements into failures:
+Every benchmark calls `ReportAllocs`. `TestTypedHotPathAllocationBudgets` enforces deterministic budgets based on current evidence while retaining a small compiler/runtime margin:
 
-- typed SELECT rendering: at most 40 allocations per build;
-- typed table scanning: at most 8 allocations per row.
+- typed SELECT rendering: at most 36 allocations per build;
+- typed table scanning: at most 2 allocations per row.
 
-Tighten these budgets only after collecting repeated results across supported Go versions. Do not replace them with nanosecond thresholds in unit tests.
+Do not replace these budgets with nanosecond thresholds in unit tests. Tighten them after repeated measurements and implementation improvements; raise them only with benchmark evidence and an explicit review of the added allocations.
 
 ## PostgreSQL benchmarks
 
@@ -75,6 +75,28 @@ Both relation paths load 100 source rows containing 20 unique account keys and t
 `TypedRelation` performs the same external work through `ManyRelation.Load`, including source-key deduplication, query construction, typed scanning, unexpected-key validation, grouping, source-order alignment, and independent result slices.
 
 This benchmark compares explicit batched relation loading with an optimal direct batched implementation. It is not an N+1 comparison. Query-count correctness is enforced separately by PostgreSQL integration tests.
+
+## Current CI evidence
+
+The first committed benchmark gate ran in GitHub Actions workflow run `31070509264` on August 6, 2026. The pure Go sample used Go `1.25.12`, Linux amd64, and an AMD EPYC 9V74 runner with fixed `100x` iterations:
+
+```text
+BenchmarkStatementBuild/Direct-4       468.3 ns/op      48 B/op    1 allocs/op
+BenchmarkStatementBuild/Typed-4       4868   ns/op    1064 B/op   32 allocs/op
+BenchmarkRowScan/Direct-4              117.2 ns/op      32 B/op    1 allocs/op
+BenchmarkRowScan/TypedTable-4          105.8 ns/op      32 B/op    1 allocs/op
+```
+
+The PostgreSQL sample used Go `1.25.12`, PostgreSQL `18.4`, Linux amd64, the same CPU family, and fixed `20x` iterations:
+
+```text
+BenchmarkFetchOnePostgreSQL/DirectPgx-4             161118 ns/op     954 B/op   13 allocs/op
+BenchmarkFetchOnePostgreSQL/TypedFetchOne-4         147032 ns/op    1309 B/op   29 allocs/op
+BenchmarkRelationLoadPostgreSQL/DirectPgxBatch-4    239366 ns/op   14716 B/op  293 allocs/op
+BenchmarkRelationLoadPostgreSQL/TypedRelation-4     277288 ns/op   29342 B/op  437 allocs/op
+```
+
+These are single fixed-iteration smoke samples, not statistically significant latency comparisons. They establish the initial allocation baseline and confirm that benchmark code executes in CI. The fetch-one wall-clock ordering may reverse on another runner because database/protocol variance is larger than the measured difference. The relation sample shows a concrete allocation-optimization opportunity in typed grouping and validation; it is recorded rather than hidden, and future changes should be compared with repeated local samples through `benchstat`.
 
 ## CI smoke
 
@@ -127,4 +149,5 @@ The primary v1 performance contract is:
 - explicit, bounded relation query counts;
 - immutable builders safe for concurrent reuse;
 - allocation regressions caught by deterministic budgets;
+- benchmark evidence retained for future comparisons;
 - no latency claim based on one hosted-runner sample.
