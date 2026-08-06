@@ -54,6 +54,16 @@ jobs:
       - name: Test with race detector
         run: go test -race ./... -count=1
 
+      - name: Run Go benchmark smoke
+        if: matrix.go == '1.25.x'
+        run: >-
+          go test ./postgres/query
+          -run '^$'
+          -bench '^(BenchmarkStatementBuild|BenchmarkRowScan)$'
+          -benchmem
+          -benchtime=100x
+          -count=1
+
   postgres:
     name: PostgreSQL ${{ matrix.postgres }}
     runs-on: ubuntu-latest
@@ -95,3 +105,13 @@ jobs:
 
       - name: Run PostgreSQL integration tests
         run: go test -race ./postgres/... -count=1
+
+      - name: Run PostgreSQL benchmark smoke
+        if: matrix.postgres == '18'
+        run: >-
+          go test ./postgres/query
+          -run '^$'
+          -bench '^(BenchmarkFetchOnePostgreSQL|BenchmarkRelationLoadPostgreSQL)$'
+          -benchmem
+          -benchtime=20x
+          -count=1
