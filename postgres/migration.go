@@ -36,17 +36,19 @@ func renderOperations(operations []migration.Operation, reverse bool) (string, e
 	if len(operations) == 0 {
 		return "-- no schema changes\n", nil
 	}
-	statements := make([]string, 0, len(operations))
+
+	ordered := orderOperations(operations)
+	statements := make([]string, 0, len(ordered))
 	if reverse {
-		for i := len(operations) - 1; i >= 0; i-- {
-			statement, err := renderOperation(operations[i], true)
+		for i := len(ordered) - 1; i >= 0; i-- {
+			statement, err := renderOperation(ordered[i], true)
 			if err != nil {
 				return "", err
 			}
 			statements = append(statements, statement)
 		}
 	} else {
-		for _, operation := range operations {
+		for _, operation := range ordered {
 			statement, err := renderOperation(operation, false)
 			if err != nil {
 				return "", err
@@ -55,6 +57,39 @@ func renderOperations(operations []migration.Operation, reverse bool) (string, e
 		}
 	}
 	return strings.Join(statements, "\n") + "\n", nil
+}
+
+// orderOperations applies PostgreSQL dependency ordering even for plans built
+// manually instead of through migration.Diff. Stable buckets preserve the
+// planner's deterministic order within each operation class.
+func orderOperations(operations []migration.Operation) []migration.Operation {
+	buckets := make([][]migration.Operation, 8)
+	for _, operation := range operations {
+		priority := 7
+		switch operation.Kind {
+		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
+			priority = 0
+		case migration.DropTable:
+			priority = 1
+		case migration.CreateTable:
+			priority = 2
+		case migration.AddColumn:
+			priority = 3
+		case migration.AlterColumn:
+			priority = 4
+		case migration.DropColumn:
+			priority = 5
+		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
+			priority = 6
+		}
+		buckets[priority] = append(buckets[priority], operation)
+	}
+
+	ordered := make([]migration.Operation, 0, len(operations))
+	for _, bucket := range buckets {
+		ordered = append(ordered, bucket...)
+	}
+	return ordered
 }
 
 func renderOperation(operation migration.Operation, reverse bool) (string, error) {
@@ -73,10 +108,10 @@ func renderOperation(operation migration.Operation, reverse bool) (string, error
 		if reverse {
 			return "ALTER TABLE " + quote(operation.Table) + " DROP COLUMN " + quote(operation.AfterColumn.Name) + ";", nil
 		}
-		return "ALTER TABLE " + quote(operation.Table) + " ADD COLUMN " + renderColumn(*operation.AfterColumn) + ";", nil
+		return "ALTER TABLE " + quote(operation.Table) + " ADD COLUMN " + renderColumn(*operation.AfterColumn, operation.AfterColumn.PrimaryKey) + ";", nil
 	case migration.DropColumn:
 		if reverse {
-			return "ALTER TABLE " + quote(operation.Table) + " ADD COLUMN " + renderColumn(*operation.BeforeColumn) + ";", nil
+			return "ALTER TABLE " + quote(operation.Table) + " ADD COLUMN " + renderColumn(*operation.BeforeColumn, operation.BeforeColumn.PrimaryKey) + ";", nil
 		}
 		return "ALTER TABLE " + quote(operation.Table) + " DROP COLUMN " + quote(operation.BeforeColumn.Name) + ";", nil
 	case migration.AlterColumn:
@@ -85,6 +120,36 @@ func renderOperation(operation migration.Operation, reverse bool) (string, error
 			before, after = after, before
 		}
 		return renderAlterColumn(operation.Table, *before, *after)
+	case migration.CreateIndex:
+		if reverse {
+			return "DROP INDEX " + quote(operation.AfterIndex.Name) + ";", nil
+		}
+		return renderIndex(operation.Table, *operation.AfterIndex), nil
+	case migration.DropIndex:
+		if reverse {
+			return renderIndex(operation.Table, *operation.BeforeIndex), nil
+		}
+		return "DROP INDEX " + quote(operation.BeforeIndex.Name) + ";", nil
+	case migration.AddUniqueConstraint:
+		if reverse {
+			return dropConstraint(operation.Table, operation.AfterUnique.Name), nil
+		}
+		return addUniqueConstraint(operation.Table, *operation.AfterUnique), nil
+	case migration.DropUniqueConstraint:
+		if reverse {
+			return addUniqueConstraint(operation.Table, *operation.BeforeUnique), nil
+		}
+		return dropConstraint(operation.Table, operation.BeforeUnique.Name), nil
+	case migration.AddCheckConstraint:
+		if reverse {
+			return dropConstraint(operation.Table, operation.AfterCheck.Name), nil
+		}
+		return addCheckConstraint(operation.Table, *operation.AfterCheck), nil
+	case migration.DropCheckConstraint:
+		if reverse {
+			return addCheckConstraint(operation.Table, *operation.BeforeCheck), nil
+		}
+		return dropConstraint(operation.Table, operation.BeforeCheck.Name), nil
 	default:
 		return "", fmt.Errorf("postgres: unsupported migration operation %q", operation.Kind)
 	}
@@ -119,19 +184,14 @@ func renderAlterColumn(table string, before, after schema.Column) (string, error
 	return strings.Join(statements, "\n"), nil
 }
 
-func renderColumn(column schema.Column) string {
-	parts := []string{quote(column.Name), column.Type}
-	if !column.Nullable {
-		parts = append(parts, "NOT NULL")
-	}
-	if column.Default != "" {
-		parts = append(parts, "DEFAULT", column.Default)
-	}
-	if column.Unique {
-		parts = append(parts, "UNIQUE")
-	}
-	if column.PrimaryKey {
-		parts = append(parts, "PRIMARY KEY")
-	}
-	return strings.Join(parts, " ")
+func addUniqueConstraint(table string, constraint schema.UniqueConstraint) string {
+	return "ALTER TABLE " + quote(table) + " ADD CONSTRAINT " + quote(constraint.Name) + " UNIQUE (" + quoteList(constraint.Columns) + ");"
+}
+
+func addCheckConstraint(table string, constraint schema.CheckConstraint) string {
+	return "ALTER TABLE " + quote(table) + " ADD CONSTRAINT " + quote(constraint.Name) + " CHECK (" + constraint.Expression + ");"
+}
+
+func dropConstraint(table, name string) string {
+	return "ALTER TABLE " + quote(table) + " DROP CONSTRAINT " + quote(name) + ";"
 }

@@ -33,6 +33,18 @@ func NewSnapshot(model schema.Schema) (Snapshot, error) {
 	sort.Slice(canonical.Tables, func(i, j int) bool {
 		return canonical.Tables[i].Name < canonical.Tables[j].Name
 	})
+	for i := range canonical.Tables {
+		table := &canonical.Tables[i]
+		sort.Slice(table.UniqueConstraints, func(i, j int) bool {
+			return table.UniqueConstraints[i].Name < table.UniqueConstraints[j].Name
+		})
+		sort.Slice(table.Checks, func(i, j int) bool {
+			return table.Checks[i].Name < table.Checks[j].Name
+		})
+		sort.Slice(table.Indexes, func(i, j int) bool {
+			return table.Indexes[i].Name < table.Indexes[j].Name
+		})
+	}
 	return Snapshot{Version: SnapshotVersion, Schema: canonical}, nil
 }
 
@@ -91,6 +103,21 @@ func cloneSchema(model schema.Schema) schema.Schema {
 	for i, table := range model.Tables {
 		result.Tables[i] = table
 		result.Tables[i].Columns = append([]schema.Column(nil), table.Columns...)
+		if table.PrimaryKey != nil {
+			primaryKey := *table.PrimaryKey
+			primaryKey.Columns = append([]string(nil), table.PrimaryKey.Columns...)
+			result.Tables[i].PrimaryKey = &primaryKey
+		}
+		result.Tables[i].UniqueConstraints = append([]schema.UniqueConstraint(nil), table.UniqueConstraints...)
+		for j := range result.Tables[i].UniqueConstraints {
+			result.Tables[i].UniqueConstraints[j].Columns = append([]string(nil), table.UniqueConstraints[j].Columns...)
+		}
+		result.Tables[i].Checks = append([]schema.CheckConstraint(nil), table.Checks...)
+		result.Tables[i].Indexes = append([]schema.Index(nil), table.Indexes...)
+		for j := range result.Tables[i].Indexes {
+			result.Tables[i].Indexes[j].Columns = append([]string(nil), table.Indexes[j].Columns...)
+			result.Tables[i].Indexes[j].Include = append([]string(nil), table.Indexes[j].Include...)
+		}
 	}
 	return result
 }

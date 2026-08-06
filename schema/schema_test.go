@@ -2,7 +2,7 @@ package schema
 
 import "testing"
 
-func TestValidateRejectsMultipleInlinePrimaryKeys(t *testing.T) {
+func TestValidateAllowsCompositeInlinePrimaryKey(t *testing.T) {
 	t.Parallel()
 
 	model := Schema{Tables: []Table{{
@@ -10,6 +10,25 @@ func TestValidateRejectsMultipleInlinePrimaryKeys(t *testing.T) {
 		Columns: []Column{
 			{Name: "user_id", Type: "uuid", PrimaryKey: true},
 			{Name: "group_id", Type: "uuid", PrimaryKey: true},
+		},
+	}}}
+	if err := model.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsMixedInlineAndTablePrimaryKeys(t *testing.T) {
+	t.Parallel()
+
+	model := Schema{Tables: []Table{{
+		Name: "memberships",
+		Columns: []Column{
+			{Name: "user_id", Type: "uuid", PrimaryKey: true},
+			{Name: "group_id", Type: "uuid"},
+		},
+		PrimaryKey: &PrimaryKey{
+			Name:    "pk_memberships",
+			Columns: []string{"user_id", "group_id"},
 		},
 	}}}
 	if err := model.Validate(); err == nil {

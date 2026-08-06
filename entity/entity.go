@@ -11,7 +11,10 @@ import (
 	"github.com/sevlumen/orm/schema"
 )
 
-var tableNamerType = reflect.TypeOf((*TableNamer)(nil)).Elem()
+var (
+	tableNamerType = reflect.TypeOf((*TableNamer)(nil)).Elem()
+	configurerType = reflect.TypeOf((*Configurer)(nil)).Elem()
+)
 
 // TableNamer lets an entity override the default snake_case table name.
 type TableNamer interface {
@@ -59,6 +62,7 @@ func parseEntity(value any) (schema.Table, error) {
 	}
 
 	table := schema.Table{Name: tableName, Columns: make([]schema.Column, 0, t.NumField())}
+	fields := make(map[string]string, t.NumField()*2)
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if !field.IsExported() || field.Tag.Get("orm") == "-" {
@@ -70,8 +74,34 @@ func parseEntity(value any) (schema.Table, error) {
 			return schema.Table{}, fmt.Errorf("entity: %s.%s: %w", t.Name(), field.Name, err)
 		}
 		table.Columns = append(table.Columns, column)
+		fields[field.Name] = column.Name
+		fields[column.Name] = column.Name
+	}
+	if err := configureTable(t, &table, fields); err != nil {
+		return schema.Table{}, fmt.Errorf("entity: %s: %w", t.Name(), err)
 	}
 	return table, nil
+}
+
+func configureTable(t reflect.Type, table *schema.Table, fields map[string]string) (err error) {
+	var configurer Configurer
+	switch {
+	case reflect.PointerTo(t).Implements(configurerType):
+		configurer = reflect.New(t).Interface().(Configurer)
+	case t.Implements(configurerType):
+		configurer = reflect.Zero(t).Interface().(Configurer)
+	default:
+		return nil
+	}
+
+	builder := &TableBuilder{table: table, fields: fields}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("ConfigureORM panicked: %v", recovered)
+		}
+	}()
+	configurer.ConfigureORM(builder)
+	return builder.problem
 }
 
 func parseField(field reflect.StructField) (schema.Column, error) {
