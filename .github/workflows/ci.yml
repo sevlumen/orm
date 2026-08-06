@@ -109,6 +109,9 @@ jobs:
       - name: Verify public API surface
         run: go run ./cmd/apicheck -baseline api/v1
 
+      - name: Verify documentation links
+        run: go run ./cmd/doccheck
+
   postgres:
     name: PostgreSQL ${{ matrix.version }}
     runs-on: ubuntu-latest
