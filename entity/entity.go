@@ -2,6 +2,7 @@
 package entity
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -14,6 +15,11 @@ import (
 var (
 	tableNamerType = reflect.TypeOf((*TableNamer)(nil)).Elem()
 	configurerType = reflect.TypeOf((*Configurer)(nil)).Elem()
+)
+
+var (
+	timeType       = reflect.TypeOf(time.Time{})
+	jsonRawMessage = reflect.TypeOf(json.RawMessage{})
 )
 
 // TableNamer lets an entity override the default snake_case table name.
@@ -126,6 +132,7 @@ func parseField(field reflect.StructField) (schema.Column, error) {
 		PrimaryKey: options["primaryKey"] == "true",
 		Unique:     options["unique"] == "true",
 		Default:    options["default"],
+		Generated:  options["generated"],
 	}
 	if name := options["column"]; name != "" {
 		column.Name = name
@@ -142,7 +149,7 @@ func parseField(field reflect.StructField) (schema.Column, error) {
 func parseTag(tag string) (map[string]string, error) {
 	allowed := map[string]bool{
 		"column": true, "type": true, "primaryKey": true, "unique": true,
-		"notNull": true, "nullable": true, "default": true,
+		"notNull": true, "nullable": true, "default": true, "generated": true,
 	}
 	result := map[string]string{}
 	for _, token := range strings.Split(tag, ";") {
@@ -171,6 +178,9 @@ func parseTag(tag string) (map[string]string, error) {
 	if result["notNull"] == "true" && result["nullable"] == "true" {
 		return nil, fmt.Errorf("notNull and nullable cannot be used together")
 	}
+	if result["default"] != "" && result["generated"] != "" {
+		return nil, fmt.Errorf("default and generated cannot be used together")
+	}
 	return result, nil
 }
 
@@ -184,8 +194,11 @@ func dereference(t reflect.Type) (reflect.Type, bool) {
 }
 
 func inferPostgresType(t reflect.Type) (string, error) {
-	if t == reflect.TypeOf(time.Time{}) {
+	if t == timeType {
 		return "timestamptz", nil
+	}
+	if t == jsonRawMessage {
+		return "jsonb", nil
 	}
 
 	switch t.Kind() {
@@ -203,12 +216,54 @@ func inferPostgresType(t reflect.Type) (string, error) {
 		return "real", nil
 	case reflect.Float64:
 		return "double precision", nil
+	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return "", fmt.Errorf("unsupported JSONB map key type %s; use a string-keyed map or orm:\"type:...\"", t.Key())
+		}
+		return "jsonb", nil
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
 			return "bytea", nil
 		}
+		element, err := inferPostgresArrayElement(t.Elem())
+		if err != nil {
+			return "", err
+		}
+		return element + "[]", nil
 	}
 	return "", fmt.Errorf("unsupported Go type %s; use orm:\"type:...\"", t)
+}
+
+func inferPostgresArrayElement(t reflect.Type) (string, error) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == timeType {
+		return "timestamptz", nil
+	}
+	if t == jsonRawMessage {
+		return "jsonb", nil
+	}
+	if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+		return "bytea", nil
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "text", nil
+	case reflect.Bool:
+		return "boolean", nil
+	case reflect.Int8, reflect.Int16:
+		return "smallint", nil
+	case reflect.Int, reflect.Int32:
+		return "integer", nil
+	case reflect.Int64:
+		return "bigint", nil
+	case reflect.Float32:
+		return "real", nil
+	case reflect.Float64:
+		return "double precision", nil
+	}
+	return "", fmt.Errorf("unsupported PostgreSQL array element type %s; use orm:\"type:...[]\"", t)
 }
 
 func snakeCase(value string) string {

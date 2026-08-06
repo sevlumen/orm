@@ -63,28 +63,34 @@ func renderOperations(operations []migration.Operation, reverse bool) (string, e
 // manually instead of through migration.Diff. Stable buckets preserve the
 // planner's deterministic order within each operation class.
 func orderOperations(operations []migration.Operation) []migration.Operation {
-	buckets := make([][]migration.Operation, 9)
+	buckets := make([][]migration.Operation, 12)
 	for _, operation := range operations {
-		priority := 8
+		priority := 11
 		switch operation.Kind {
-		case migration.DropForeignKey:
+		case migration.CreateExtension:
 			priority = 0
-		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
+		case migration.CreateEnum:
 			priority = 1
-		case migration.DropTable:
+		case migration.DropForeignKey:
 			priority = 2
-		case migration.CreateTable:
+		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
 			priority = 3
-		case migration.AddColumn:
+		case migration.DropTable:
 			priority = 4
-		case migration.AlterColumn:
+		case migration.CreateTable:
 			priority = 5
-		case migration.DropColumn:
+		case migration.AddColumn:
 			priority = 6
-		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
+		case migration.AlterColumn:
 			priority = 7
-		case migration.AddForeignKey:
+		case migration.DropColumn:
 			priority = 8
+		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
+			priority = 9
+		case migration.AddForeignKey:
+			priority = 10
+		case migration.DropEnum:
+			priority = 11
 		}
 		buckets[priority] = append(buckets[priority], operation)
 	}
@@ -98,6 +104,21 @@ func orderOperations(operations []migration.Operation) []migration.Operation {
 
 func renderOperation(operation migration.Operation, reverse bool) (string, error) {
 	switch operation.Kind {
+	case migration.CreateExtension:
+		if reverse {
+			return "-- extension " + quote(operation.AfterExtension.Name) + " retained during rollback", nil
+		}
+		return "CREATE EXTENSION IF NOT EXISTS " + quote(operation.AfterExtension.Name) + ";", nil
+	case migration.CreateEnum:
+		if reverse {
+			return "DROP TYPE " + quote(operation.AfterEnum.Name) + ";", nil
+		}
+		return renderEnum(*operation.AfterEnum), nil
+	case migration.DropEnum:
+		if reverse {
+			return renderEnum(*operation.BeforeEnum), nil
+		}
+		return "DROP TYPE " + quote(operation.BeforeEnum.Name) + ";", nil
 	case migration.CreateTable:
 		if reverse {
 			return "DROP TABLE " + quote(operation.Table) + ";", nil
@@ -172,6 +193,9 @@ func renderOperation(operation migration.Operation, reverse bool) (string, error
 func renderAlterColumn(table string, before, after schema.Column) (string, error) {
 	if before.Name != after.Name {
 		return "", fmt.Errorf("postgres: column rename requires an explicit migration")
+	}
+	if before.Generated != after.Generated {
+		return "", fmt.Errorf("postgres: generated-column expression changes require an explicit migration")
 	}
 	var statements []string
 	prefix := "ALTER TABLE " + quote(table) + " ALTER COLUMN " + quote(after.Name)

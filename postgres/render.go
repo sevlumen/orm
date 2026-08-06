@@ -13,6 +13,12 @@ func RenderCreateSchema(model schema.Schema) (string, error) {
 		return "", err
 	}
 	var statements []string
+	for _, extension := range model.Extensions {
+		statements = append(statements, "CREATE EXTENSION IF NOT EXISTS "+quote(extension.Name)+";")
+	}
+	for _, enum := range model.Enums {
+		statements = append(statements, renderEnum(enum))
+	}
 	for _, table := range model.Tables {
 		statement, err := renderTable(table)
 		if err != nil {
@@ -31,6 +37,14 @@ func RenderCreateSchema(model schema.Schema) (string, error) {
 		return "\n", nil
 	}
 	return strings.Join(statements, "\n\n") + "\n", nil
+}
+
+func renderEnum(enum schema.EnumType) string {
+	values := make([]string, len(enum.Values))
+	for i, value := range enum.Values {
+		values[i] = quoteLiteral(value)
+	}
+	return "CREATE TYPE " + quote(enum.Name) + " AS ENUM (" + strings.Join(values, ", ") + ");"
 }
 
 func renderTable(table schema.Table) (string, error) {
@@ -70,7 +84,9 @@ func renderColumn(column schema.Column, inlinePrimaryKey bool) string {
 	if !column.Nullable {
 		parts = append(parts, "NOT NULL")
 	}
-	if column.Default != "" {
+	if column.Generated != "" {
+		parts = append(parts, "GENERATED ALWAYS AS ("+column.Generated+") STORED")
+	} else if column.Default != "" {
 		parts = append(parts, "DEFAULT", column.Default)
 	}
 	if column.Unique {
@@ -169,4 +185,8 @@ func quoteList(identifiers []string) string {
 
 func quote(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+func quoteLiteral(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
 }
