@@ -75,7 +75,8 @@ func NewExecutor(db DB, options ...ExecutorOption) (*Executor, error) {
 	return executor, nil
 }
 
-// ExecutionError adds operation and SQL context without formatting arguments.
+// ExecutionError adds operation and SQL context without formatting arguments or
+// raw driver error text. Use errors.Is, errors.As, or Unwrap to inspect the cause.
 type ExecutionError struct {
 	Operation string
 	SQL       string
@@ -83,7 +84,10 @@ type ExecutionError struct {
 }
 
 func (e *ExecutionError) Error() string {
-	return fmt.Sprintf("query: %s failed for SQL %q: %v", e.Operation, e.SQL, e.Err)
+	if e == nil {
+		return "query: execution failed"
+	}
+	return fmt.Sprintf("query: %s failed for SQL %q", e.Operation, e.SQL)
 }
 
 func (e *ExecutionError) Unwrap() error { return e.Err }
@@ -358,13 +362,17 @@ func (e *Executor) start(ctx context.Context, operation, sql string) time.Time {
 }
 
 func (e *Executor) finish(ctx context.Context, operation, sql string, started time.Time, rowsAffected int64, err error) {
+	eventErr := err
+	if err != nil {
+		eventErr = executionError(operation, sql, err)
+	}
 	e.observeAfter(ctx, Event{
 		Operation:    operation,
 		SQL:          sql,
 		StartedAt:    started,
 		Duration:     nonNegativeDuration(e.now().Sub(started)),
 		RowsAffected: rowsAffected,
-		Err:          err,
+		Err:          eventErr,
 	})
 }
 
