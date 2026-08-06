@@ -28,7 +28,7 @@ Every pull request runs:
 - PostgreSQL integration tests on digest-pinned PostgreSQL 14 and 18 images;
 - `govulncheck` including test code;
 - deterministic fuzz smoke for parsers and SQL boundaries;
-- public API surface comparison against `api/v1.txt`;
+- public API surface comparison against the package-split baseline under `api/v1/`;
 - Windows cross-compilation for shipped commands;
 - allocation and benchmark smoke tests.
 
@@ -104,13 +104,15 @@ CI and release tools invoked with `go run module@version` must use an exact revi
 
 ## Public API compatibility
 
-`api/v1.txt` is a deterministic source-level manifest of exported declarations. CI fails when the current surface differs.
+The sorted files under `api/v1/` form one deterministic source-level manifest of exported declarations. CI concatenates them and fails when the current surface differs.
 
 Regenerate it only after reviewing the compatibility impact:
 
 ```text
-go run ./cmd/apicheck -write -baseline api/v1.txt
+go run ./cmd/apicheck -write -baseline api/v1
 ```
+
+Write mode replaces the directory's text parts with one canonical `surface.txt`; package-split files are retained in the repository only to keep ordinary review diffs readable.
 
 Before `v1.0.0`, intentional changes may update the baseline with review. After `v1.0.0`, removals and incompatible signature, exported-field, interface, constant, or type changes require a new major version unless the compatibility policy explicitly permits the change.
 
