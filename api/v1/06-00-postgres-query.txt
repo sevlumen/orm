@@ -1,0 +1,90 @@
+package github.com/sevlumen/orm/postgres/query
+
+func (b Batch) Len() int
+
+func (b Batch) QueueExec(operation string, statement Statement) Batch
+
+func (b DeleteBuilder[T]) AllRows() DeleteBuilder[T]
+
+func (b DeleteBuilder[T]) Build() (Statement, error)
+
+func (b DeleteBuilder[T]) Returning() DeleteBuilder[T]
+
+func (b DeleteBuilder[T]) Where(predicate Predicate[T]) DeleteBuilder[T]
+
+func (b InsertBuilder[T]) Build() (Statement, error)
+
+func (b InsertBuilder[T]) DoNothing() InsertBuilder[T]
+
+func (b InsertBuilder[T]) DoUpdate(assignments ...Assignment[T]) InsertBuilder[T]
+
+func (b InsertBuilder[T]) OnAnyConflict() InsertBuilder[T]
+
+func (b InsertBuilder[T]) OnConflict(columns ...ConflictColumn[T]) InsertBuilder[T]
+
+func (b InsertBuilder[T]) Returning() InsertBuilder[T]
+
+func (b InsertBuilder[T]) Row(assignments ...Assignment[T]) InsertBuilder[T]
+
+func (b SelectBuilder[T]) Build() (Statement, error)
+
+func (b SelectBuilder[T]) Distinct() SelectBuilder[T]
+
+func (b SelectBuilder[T]) ForShare() SelectBuilder[T]
+
+func (b SelectBuilder[T]) ForUpdate() SelectBuilder[T]
+
+func (b SelectBuilder[T]) Limit(value int64) SelectBuilder[T]
+
+func (b SelectBuilder[T]) NoWait() SelectBuilder[T]
+
+func (b SelectBuilder[T]) Offset(value int64) SelectBuilder[T]
+
+func (b SelectBuilder[T]) OrderBy(orders ...Order[T]) SelectBuilder[T]
+
+func (b SelectBuilder[T]) SkipLocked() SelectBuilder[T]
+
+func (b SelectBuilder[T]) Where(predicate Predicate[T]) SelectBuilder[T]
+
+func (b UpdateBuilder[T]) AllRows() UpdateBuilder[T]
+
+func (b UpdateBuilder[T]) Build() (Statement, error)
+
+func (b UpdateBuilder[T]) Returning() UpdateBuilder[T]
+
+func (b UpdateBuilder[T]) Set(assignments ...Assignment[T]) UpdateBuilder[T]
+
+func (b UpdateBuilder[T]) Where(predicate Predicate[T]) UpdateBuilder[T]
+
+func (c Column[T, V]) Asc() Order[T]
+
+func (c Column[T, V]) ConflictTarget() ConflictColumn[T]
+
+func (c Column[T, V]) Desc() Order[T]
+
+func (c Column[T, V]) Eq(value V) Predicate[T]
+
+func (c Column[T, V]) EqColumn(other Column[T, V]) Predicate[T]
+
+func (c Column[T, V]) Excluded() Assignment[T]
+
+func (c Column[T, V]) Gt(value V) Predicate[T]
+
+func (c Column[T, V]) Gte(value V) Predicate[T]
+
+func (c Column[T, V]) In(values ...V) Predicate[T]
+
+func (c Column[T, V]) IsNotNull() Predicate[T]
+
+func (c Column[T, V]) IsNull() Predicate[T]
+
+func (c Column[T, V]) Lt(value V) Predicate[T]
+
+func (c Column[T, V]) Lte(value V) Predicate[T]
+
+func (c Column[T, V]) Name() string
+
+func (c Column[T, V]) Ne(value V) Predicate[T]
+
+func (c Column[T, V]) NeColumn(other Column[T, V]) Predicate[T]
+
