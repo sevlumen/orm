@@ -102,7 +102,6 @@ func BenchmarkRowScan(b *testing.B) {
 }
 
 func TestTypedHotPathAllocationBudgets(t *testing.T) {
-	t.Parallel()
 	table, columns := benchmarkUserMetadata(t, "allocation_users")
 	builder := Select(table).
 		Where(And(columns.ID.Eq(int64(42)), columns.Active.Eq(true))).
