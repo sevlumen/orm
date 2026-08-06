@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const rollbackTimeout = 5 * time.Second
+
 // Beginner is implemented by pgxpool.Pool and pgx.Tx.
 type Beginner interface {
 	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
@@ -27,8 +29,8 @@ func (e *TransactionError) Error() string {
 func (e *TransactionError) Unwrap() error { return e.Err }
 
 // InTransaction runs callback with an Executor bound to one pgx transaction.
-// Callback errors and panics trigger rollback. Observer options are propagated to
-// the transaction executor.
+// Callback errors and panics trigger rollback. Panics are rethrown after the
+// rollback attempt. Observer options are propagated to the transaction executor.
 func InTransaction(
 	ctx context.Context,
 	beginner Beginner,
@@ -36,7 +38,7 @@ func InTransaction(
 	callback func(*Executor) error,
 	executorOptions ...ExecutorOption,
 ) (err error) {
-	if beginner == nil {
+	if isNilInterface(beginner) {
 		return fmt.Errorf("query: transaction requires a beginner")
 	}
 	if callback == nil {
@@ -47,12 +49,15 @@ func InTransaction(
 	if beginErr != nil {
 		return &TransactionError{Stage: "begin", Err: beginErr}
 	}
+	if isNilInterface(tx) {
+		return &TransactionError{Stage: "begin", Err: fmt.Errorf("beginner returned nil transaction")}
+	}
 	committed := false
 	defer func() {
 		if committed {
 			return
 		}
-		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), rollbackTimeout)
 		rollbackErr := tx.Rollback(rollbackCtx)
 		cancel()
 		if rollbackErr == nil || errors.Is(rollbackErr, pgx.ErrTxClosed) {
