@@ -11,6 +11,7 @@ type AccountORMMetadata struct {
 
 	ID          query.Column[Account, int64]
 	LoginEmail  query.Column[Account, string]
+	LegacyNote  query.Column[Account, *string]
 	DisplayName query.Column[Account, *string]
 	Active      query.Column[Account, bool]
 }
@@ -18,11 +19,12 @@ type AccountORMMetadata struct {
 var AccountORM = newAccountORMMetadata()
 
 func newAccountORMMetadata() AccountORMMetadata {
-	table := mustAccountORMTable(query.NewTable[Account]("accounts", []string{"id", "login_email", "display_name", "active"}, scanAccountORM))
+	table := mustAccountORMTable(query.NewTable[Account]("accounts", []string{"id", "login_email", "legacy_note", "display_name", "active"}, scanAccountORM))
 	return AccountORMMetadata{
 		Table:       table,
 		ID:          mustAccountORMColumn(query.NewColumn[Account, int64](table, "id", query.InsertOnlyColumn())),
 		LoginEmail:  mustAccountORMColumn(query.NewColumn[Account, string](table, "login_email")),
+		LegacyNote:  mustAccountORMColumn(query.NewColumn[Account, *string](table, "legacy_note")),
 		DisplayName: mustAccountORMColumn(query.NewColumn[Account, *string](table, "display_name")),
 		Active:      mustAccountORMColumn(query.NewColumn[Account, bool](table, "active")),
 	}
@@ -44,7 +46,7 @@ func mustAccountORMColumn[V any](value query.Column[Account, V], err error) quer
 
 func scanAccountORM(row query.RowScanner) (Account, error) {
 	var value Account
-	err := row.Scan(&value.ID, &value.LoginEmail, &value.DisplayName, &value.Active)
+	err := row.Scan(&value.ID, &value.LoginEmail, &value.LegacyNote, &value.DisplayName, &value.Active)
 	return value, err
 }
 
