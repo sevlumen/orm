@@ -160,8 +160,8 @@ func verifyBinaryArchive(path, root string, windows bool) error {
 		extension = ".exe"
 	}
 	expected := map[string]struct{}{
-		root + "/LICENSE":          {},
-		root + "/README.md":        {},
+		root + "/LICENSE":            {},
+		root + "/README.md":          {},
 		root + "/orm" + extension:    {},
 		root + "/ormgen" + extension: {},
 	}
