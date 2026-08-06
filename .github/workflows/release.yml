@@ -139,10 +139,12 @@ jobs:
           cache: false
 
       - name: Build release artifacts twice
+        id: release_metadata
         shell: bash
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
+          release="${tag#v}"
           release_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           test "$(git rev-list -n1 "$tag")" = "$GITHUB_SHA"
           test "$(git cat-file -t "$tag")" = tag
@@ -154,6 +156,7 @@ jobs:
             -version "$tag" -commit "$GITHUB_SHA" -date "$release_date"
           diff -ru --no-dereference dist dist-rebuild
           go run ./cmd/releaseverify -dir dist
+          echo "sbom_path=dist/sevlumen-orm_${release}_sbom.spdx.json" >> "$GITHUB_OUTPUT"
 
       - name: Exercise released Linux binaries
         shell: bash
@@ -179,7 +182,7 @@ jobs:
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-checksums: dist/SHA256SUMS
-          sbom-path: dist/sevlumen-orm_${{ github.ref_name }}_sbom.spdx.json
+          sbom-path: ${{ steps.release_metadata.outputs.sbom_path }}
 
       - name: Publish immutable tag assets
         env:
