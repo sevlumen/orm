@@ -162,7 +162,17 @@ func TestFetchAllHandlesNilRowsWithoutPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = FetchAll(context.Background(), executor, Select(table))
-	if err == nil || !strings.Contains(err.Error(), "nil rows") {
-		t.Fatalf("error = %v, want nil rows error", err)
+	if err == nil {
+		t.Fatal("expected nil rows error")
+	}
+	var executionErr *ExecutionError
+	if !errors.As(err, &executionErr) {
+		t.Fatalf("error type = %T, want *ExecutionError", err)
+	}
+	if executionErr.Err == nil || !strings.Contains(executionErr.Err.Error(), "nil rows") {
+		t.Fatalf("cause = %v, want nil rows error", executionErr.Err)
+	}
+	if strings.Contains(err.Error(), "nil rows") {
+		t.Fatalf("public error unexpectedly exposed cause text: %v", err)
 	}
 }
