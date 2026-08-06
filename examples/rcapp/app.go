@@ -72,6 +72,7 @@ func CreateAccount(ctx context.Context, executor *query.Executor, account Accoun
 	return query.InsertOne(ctx, executor, query.Insert(AccountORM.Table).Row(
 		AccountORM.ID.Set(account.ID),
 		AccountORM.LoginEmail.Set(account.LoginEmail),
+		AccountORM.LegacyNote.Set(account.LegacyNote),
 		AccountORM.DisplayName.Set(account.DisplayName),
 		AccountORM.Active.Set(account.Active),
 	))
