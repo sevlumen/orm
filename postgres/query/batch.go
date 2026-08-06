@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -41,6 +40,10 @@ func (b Batch) QueueExec(operation string, statement Statement) Batch {
 	}
 	if strings.TrimSpace(statement.SQL) == "" {
 		b.err = fmt.Errorf("query: batch SQL is empty")
+		return b
+	}
+	if strings.ContainsRune(statement.SQL, '\x00') {
+		b.err = fmt.Errorf("query: batch SQL contains NUL")
 		return b
 	}
 	copyStatement := Statement{SQL: statement.SQL, Args: append([]any(nil), statement.Args...)}
@@ -96,7 +99,7 @@ func QueueDelete[T any](batch Batch, builder DeleteBuilder[T]) Batch {
 // ExecBatch executes every queued non-returning statement and closes all pgx
 // batch results on every path.
 func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgconn.CommandTag, err error) {
-	if executor == nil || executor.db == nil {
+	if executor == nil || isNilInterface(executor.db) {
 		return nil, fmt.Errorf("query: batch requires a configured executor")
 	}
 	if batch.err != nil {
@@ -106,21 +109,22 @@ func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgc
 		return nil, fmt.Errorf("query: batch requires at least one statement")
 	}
 	sender, ok := executor.db.(BatchSender)
-	if !ok {
+	if !ok || isNilInterface(sender) {
 		return nil, fmt.Errorf("query: executor database does not support pgx batches")
 	}
 
 	pgxBatch := &pgx.Batch{}
-	started := make([]time.Time, len(batch.entries))
-	for index, entry := range batch.entries {
+	for _, entry := range batch.entries {
 		if validateErr := executor.validate(entry.operation, entry.statement); validateErr != nil {
 			return nil, validateErr
 		}
 		pgxBatch.Queue(entry.statement.SQL, entry.statement.Args...)
-		started[index] = executor.start(ctx, entry.operation, entry.statement.SQL)
 	}
 
 	results := sender.SendBatch(ctx, pgxBatch)
+	if isNilInterface(results) {
+		return nil, fmt.Errorf("query: batch sender returned nil results")
+	}
 	closed := false
 	defer func() {
 		if closed {
@@ -139,9 +143,10 @@ func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgc
 	}()
 
 	tags = make([]pgconn.CommandTag, 0, len(batch.entries))
-	for index, entry := range batch.entries {
+	for _, entry := range batch.entries {
+		started := executor.start(ctx, entry.operation, entry.statement.SQL)
 		tag, execErr := results.Exec()
-		executor.finish(ctx, entry.operation, entry.statement.SQL, started[index], tag.RowsAffected(), execErr)
+		executor.finish(ctx, entry.operation, entry.statement.SQL, started, tag.RowsAffected(), execErr)
 		if execErr != nil {
 			return nil, executionError(entry.operation, entry.statement.SQL, execErr)
 		}
@@ -157,19 +162,18 @@ func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgc
 
 // FetchBatch executes homogeneous typed SELECT builders in one pgx batch.
 func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...SelectBuilder[T]) (result [][]T, err error) {
-	if executor == nil || executor.db == nil {
+	if executor == nil || isNilInterface(executor.db) {
 		return nil, fmt.Errorf("query: select batch requires a configured executor")
 	}
 	if len(builders) == 0 {
 		return nil, fmt.Errorf("query: select batch requires at least one SELECT")
 	}
 	sender, ok := executor.db.(BatchSender)
-	if !ok {
+	if !ok || isNilInterface(sender) {
 		return nil, fmt.Errorf("query: executor database does not support pgx batches")
 	}
 
 	statements := make([]Statement, len(builders))
-	started := make([]time.Time, len(builders))
 	pgxBatch := &pgx.Batch{}
 	for index, builder := range builders {
 		statement, buildErr := builder.Build()
@@ -179,12 +183,17 @@ func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...Sele
 		if validateErr := executor.validate("batch select", statement); validateErr != nil {
 			return nil, validateErr
 		}
+		if builder.table == nil {
+			return nil, fmt.Errorf("query: select batch item %d requires table metadata", index)
+		}
 		statements[index] = statement
 		pgxBatch.Queue(statement.SQL, statement.Args...)
-		started[index] = executor.start(ctx, "batch select", statement.SQL)
 	}
 
 	results := sender.SendBatch(ctx, pgxBatch)
+	if isNilInterface(results) {
+		return nil, fmt.Errorf("query: select batch sender returned nil results")
+	}
 	closed := false
 	defer func() {
 		if closed {
@@ -204,29 +213,37 @@ func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...Sele
 
 	result = make([][]T, len(builders))
 	for index, builder := range builders {
+		started := executor.start(ctx, "batch select", statements[index].SQL)
 		rows, queryErr := results.Query()
 		if queryErr != nil {
-			executor.finish(ctx, "batch select", statements[index].SQL, started[index], 0, queryErr)
+			if rows != nil {
+				rows.Close()
+			}
+			executor.finish(ctx, "batch select", statements[index].SQL, started, 0, queryErr)
 			return nil, executionError("batch select", statements[index].SQL, queryErr)
+		}
+		if rows == nil {
+			nilRowsErr := fmt.Errorf("query: database returned nil rows")
+			executor.finish(ctx, "batch select", statements[index].SQL, started, 0, nilRowsErr)
+			return nil, executionError("batch select", statements[index].SQL, nilRowsErr)
 		}
 		values := make([]T, 0)
 		for rows.Next() {
 			value, scanErr := builder.table.Scan(rows)
 			if scanErr != nil {
 				rows.Close()
-				executor.finish(ctx, "batch select", statements[index].SQL, started[index], int64(len(values)), scanErr)
+				executor.finish(ctx, "batch select", statements[index].SQL, started, int64(len(values)), scanErr)
 				return nil, executionError("batch select scan", statements[index].SQL, scanErr)
 			}
 			values = append(values, value)
 		}
-		rowsErr := rows.Err()
 		rows.Close()
-		if rowsErr != nil {
-			executor.finish(ctx, "batch select", statements[index].SQL, started[index], int64(len(values)), rowsErr)
+		if rowsErr := rows.Err(); rowsErr != nil {
+			executor.finish(ctx, "batch select", statements[index].SQL, started, int64(len(values)), rowsErr)
 			return nil, executionError("batch select rows", statements[index].SQL, rowsErr)
 		}
 		result[index] = values
-		executor.finish(ctx, "batch select", statements[index].SQL, started[index], int64(len(values)), nil)
+		executor.finish(ctx, "batch select", statements[index].SQL, started, int64(len(values)), nil)
 	}
 	if closeErr := results.Close(); closeErr != nil {
 		closed = true
