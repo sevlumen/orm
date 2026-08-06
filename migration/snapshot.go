@@ -41,6 +41,9 @@ func NewSnapshot(model schema.Schema) (Snapshot, error) {
 		sort.Slice(table.Checks, func(i, j int) bool {
 			return table.Checks[i].Name < table.Checks[j].Name
 		})
+		sort.Slice(table.ForeignKeys, func(i, j int) bool {
+			return table.ForeignKeys[i].Name < table.ForeignKeys[j].Name
+		})
 		sort.Slice(table.Indexes, func(i, j int) bool {
 			return table.Indexes[i].Name < table.Indexes[j].Name
 		})
@@ -113,6 +116,11 @@ func cloneSchema(model schema.Schema) schema.Schema {
 			result.Tables[i].UniqueConstraints[j].Columns = append([]string(nil), table.UniqueConstraints[j].Columns...)
 		}
 		result.Tables[i].Checks = append([]schema.CheckConstraint(nil), table.Checks...)
+		result.Tables[i].ForeignKeys = append([]schema.ForeignKey(nil), table.ForeignKeys...)
+		for j := range result.Tables[i].ForeignKeys {
+			result.Tables[i].ForeignKeys[j].Columns = append([]string(nil), table.ForeignKeys[j].Columns...)
+			result.Tables[i].ForeignKeys[j].ReferencedColumns = append([]string(nil), table.ForeignKeys[j].ReferencedColumns...)
+		}
 		result.Tables[i].Indexes = append([]schema.Index(nil), table.Indexes...)
 		for j := range result.Tables[i].Indexes {
 			result.Tables[i].Indexes[j].Columns = append([]string(nil), table.Indexes[j].Columns...)
