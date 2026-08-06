@@ -7,15 +7,15 @@ import (
 
 // SelectBuilder builds one typed PostgreSQL SELECT statement.
 type SelectBuilder[T any] struct {
-	table      *Table[T]
-	predicate  *Predicate[T]
-	orders     []Order[T]
-	limit      *int64
-	offset     *int64
-	distinct   bool
-	lock       string
-	lockWait   string
-	err        error
+	table     *Table[T]
+	predicate *Predicate[T]
+	orders    []Order[T]
+	limit     *int64
+	offset    *int64
+	distinct  bool
+	lock      string
+	lockWait  string
+	err       error
 }
 
 // Select starts a full-row select using the table's ordered selectable columns.
