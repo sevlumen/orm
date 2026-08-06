@@ -3,8 +3,11 @@ package releasepack
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"sort"
 	"strings"
@@ -36,18 +39,18 @@ type spdxCreationInfo struct {
 }
 
 type spdxPackage struct {
-	Name              string            `json:"name"`
-	SPDXID            string            `json:"SPDXID"`
-	VersionInfo       string            `json:"versionInfo,omitempty"`
-	DownloadLocation  string            `json:"downloadLocation"`
-	FilesAnalyzed     bool              `json:"filesAnalyzed"`
-	LicenseConcluded  string            `json:"licenseConcluded"`
-	LicenseDeclared   string            `json:"licenseDeclared"`
-	CopyrightText     string            `json:"copyrightText"`
-	ExternalRefs      []spdxExternalRef `json:"externalRefs,omitempty"`
-	PackageChecksums  []spdxChecksum    `json:"checksums,omitempty"`
-	PrimaryPurpose    string            `json:"primaryPackagePurpose,omitempty"`
-	SourceInfo        string            `json:"sourceInfo,omitempty"`
+	Name             string            `json:"name"`
+	SPDXID           string            `json:"SPDXID"`
+	VersionInfo      string            `json:"versionInfo,omitempty"`
+	DownloadLocation string            `json:"downloadLocation"`
+	FilesAnalyzed    bool              `json:"filesAnalyzed"`
+	LicenseConcluded string            `json:"licenseConcluded"`
+	LicenseDeclared  string            `json:"licenseDeclared"`
+	CopyrightText    string            `json:"copyrightText"`
+	ExternalRefs     []spdxExternalRef `json:"externalRefs,omitempty"`
+	Checksums        []spdxChecksum    `json:"checksums,omitempty"`
+	PrimaryPurpose   string            `json:"primaryPackagePurpose,omitempty"`
+	SourceInfo       string            `json:"sourceInfo,omitempty"`
 }
 
 type spdxExternalRef struct {
@@ -98,7 +101,7 @@ func writeSBOM(ctx context.Context, root, path string, config Config, buildTime 
 			Name:             module.Path,
 			SPDXID:           id,
 			VersionInfo:      version,
-			DownloadLocation: moduleDownloadLocation(resolved),
+			DownloadLocation: "NOASSERTION",
 			FilesAnalyzed:    false,
 			LicenseConcluded: "NOASSERTION",
 			LicenseDeclared:  "NOASSERTION",
@@ -113,8 +116,14 @@ func writeSBOM(ctx context.Context, root, path string, config Config, buildTime 
 			entry.PrimaryPurpose = "APPLICATION"
 			entry.SourceInfo = "Release commit " + config.Commit
 			rootID = id
-		} else if resolved.Sum != "" {
-			entry.PackageChecksums = []spdxChecksum{{Algorithm: "SHA256", ChecksumValue: checksumFromGoSum(resolved.Sum)}}
+		} else {
+			sum := resolved.Sum
+			if sum == "" {
+				sum = module.Sum
+			}
+			if checksum, ok := goSumSHA256(sum); ok {
+				entry.Checksums = []spdxChecksum{{Algorithm: "SHA256", ChecksumValue: checksum}}
+			}
 		}
 		document.Packages = append(document.Packages, entry)
 	}
@@ -151,9 +160,11 @@ func listModules(ctx context.Context, root string) ([]goModule, error) {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(output))
 	var modules []goModule
-	for decoder.More() {
+	for {
 		var module goModule
-		if err := decoder.Decode(&module); err != nil {
+		if err := decoder.Decode(&module); err == io.EOF {
+			break
+		} else if err != nil {
 			return nil, fmt.Errorf("releasepack: decode Go module graph: %w", err)
 		}
 		modules = append(modules, module)
@@ -170,16 +181,6 @@ func listModules(ctx context.Context, root string) ([]goModule, error) {
 	return modules, nil
 }
 
-func moduleDownloadLocation(module goModule) string {
-	if module.Path == "" {
-		return "NOASSERTION"
-	}
-	if module.Version == "" {
-		return "NOASSERTION"
-	}
-	return "https://proxy.golang.org/" + module.Path + "/@v/" + module.Version + ".zip"
-}
-
 func modulePURL(path, version string) string {
 	locator := "pkg:golang/" + path
 	if version != "" {
@@ -188,8 +189,13 @@ func modulePURL(path, version string) string {
 	return locator
 }
 
-func checksumFromGoSum(sum string) string {
-	// Go module sums are h1/base64, not SHA-256 hex. Preserve the authenticated
-	// value in SourceInfo instead of mislabeling it as an SPDX SHA-256 checksum.
-	return strings.TrimPrefix(sum, "h1:")
+func goSumSHA256(sum string) (string, bool) {
+	if !strings.HasPrefix(sum, "h1:") {
+		return "", false
+	}
+	digest, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(sum, "h1:"))
+	if err != nil || len(digest) != 32 {
+		return "", false
+	}
+	return hex.EncodeToString(digest), true
 }
