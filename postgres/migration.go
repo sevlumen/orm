@@ -36,17 +36,19 @@ func renderOperations(operations []migration.Operation, reverse bool) (string, e
 	if len(operations) == 0 {
 		return "-- no schema changes\n", nil
 	}
-	statements := make([]string, 0, len(operations))
+
+	ordered := orderOperations(operations)
+	statements := make([]string, 0, len(ordered))
 	if reverse {
-		for i := len(operations) - 1; i >= 0; i-- {
-			statement, err := renderOperation(operations[i], true)
+		for i := len(ordered) - 1; i >= 0; i-- {
+			statement, err := renderOperation(ordered[i], true)
 			if err != nil {
 				return "", err
 			}
 			statements = append(statements, statement)
 		}
 	} else {
-		for _, operation := range operations {
+		for _, operation := range ordered {
 			statement, err := renderOperation(operation, false)
 			if err != nil {
 				return "", err
@@ -55,6 +57,39 @@ func renderOperations(operations []migration.Operation, reverse bool) (string, e
 		}
 	}
 	return strings.Join(statements, "\n") + "\n", nil
+}
+
+// orderOperations applies PostgreSQL dependency ordering even for plans built
+// manually instead of through migration.Diff. Stable buckets preserve the
+// planner's deterministic order within each operation class.
+func orderOperations(operations []migration.Operation) []migration.Operation {
+	buckets := make([][]migration.Operation, 8)
+	for _, operation := range operations {
+		priority := 7
+		switch operation.Kind {
+		case migration.DropIndex, migration.DropUniqueConstraint, migration.DropCheckConstraint:
+			priority = 0
+		case migration.DropTable:
+			priority = 1
+		case migration.CreateTable:
+			priority = 2
+		case migration.AddColumn:
+			priority = 3
+		case migration.AlterColumn:
+			priority = 4
+		case migration.DropColumn:
+			priority = 5
+		case migration.CreateIndex, migration.AddUniqueConstraint, migration.AddCheckConstraint:
+			priority = 6
+		}
+		buckets[priority] = append(buckets[priority], operation)
+	}
+
+	ordered := make([]migration.Operation, 0, len(operations))
+	for _, bucket := range buckets {
+		ordered = append(ordered, bucket...)
+	}
+	return ordered
 }
 
 func renderOperation(operation migration.Operation, reverse bool) (string, error) {
