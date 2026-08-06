@@ -45,21 +45,27 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 				{Name: "email", Type: "text"},
 			},
 		}}})
-		writeCLIArtifact(t, root, "202608060001_init", before, first)
+		firstID := "20260806000100_init"
+		writeCLIArtifact(t, root, firstID, before, first)
 		second := cliSnapshot(t, schema.Schema{Tables: []schema.Table{{
 			Name: tableName,
 			Columns: []schema.Column{
 				{Name: "id", Type: "bigint", PrimaryKey: true},
 				{Name: "email", Type: "text"},
 			},
-			UniqueConstraints: []schema.UniqueConstraint{{Name: "uq_" + tableName + "_email", Columns: []string{"email"}}},
+			UniqueConstraints: []schema.UniqueConstraint{{
+				Name:    "uq_" + tableName + "_email",
+				Columns: []string{"email"},
+			}},
 		}}})
-		writeCLIArtifact(t, root, "202608060002_unique", first, second)
+		secondID := "20260806000200_unique"
+		writeCLIArtifact(t, root, secondID, first, second)
 		configPath := writeCLIConfig(t, root, historyTable, 81001, "safe", "5s")
 		defer cleanupCLIDatabase(pool, tableName, historyTable)
 
 		exit, stdout, stderr := runCLI(ctx, connectionString, "status", "--config", configPath, "--json")
-		if exit != 0 || !strings.Contains(stdout, `"pending":["202608060001_init","202608060002_unique"]`) {
+		wantPending := `"pending":["` + firstID + `","` + secondID + `"]`
+		if exit != 0 || !strings.Contains(stdout, wantPending) {
 			t.Fatalf("initial status exit=%d stdout=%s stderr=%s", exit, stdout, stderr)
 		}
 
@@ -71,12 +77,12 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 		if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+pgx.Identifier{"public", historyTable}.Sanitize()).Scan(&applied); err != nil {
 			t.Fatal(err)
 		}
-		if applied != 1 {
-			t.Fatalf("applied history rows=%d, want 1 safe migration", applied)
+		if applied != 0 {
+			t.Fatalf("applied history rows=%d, want 0 after risk preflight refusal", applied)
 		}
 
 		exit, stdout, stderr = runCLI(ctx, connectionString, "apply", "--config", configPath, "--max-risk", "review", "--json")
-		if exit != 0 || !strings.Contains(stdout, `"count":1`) {
+		if exit != 0 || !strings.Contains(stdout, `"count":2`) {
 			t.Fatalf("review apply exit=%d stdout=%s stderr=%s", exit, stdout, stderr)
 		}
 
@@ -103,16 +109,20 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 		root := t.TempDir()
 		after := cliSnapshot(t, schema.Schema{Tables: []schema.Table{{
 			Name: tableName,
-			Columns: []schema.Column{{Name: "id", Type: "bigint", PrimaryKey: true}},
+			Columns: []schema.Column{{
+				Name:       "id",
+				Type:       "bigint",
+				PrimaryKey: true,
+			}},
 		}}})
-		id := "202608060001_init"
+		id := "20260806000100_init"
 		writeCLIArtifact(t, root, id, migration.EmptySnapshot(), after)
 		configPath := writeCLIConfig(t, root, historyTable, 81002, "safe", "5s")
 		defer cleanupCLIDatabase(pool, tableName, historyTable)
 		if exit, _, stderr := runCLI(ctx, connectionString, "apply", "--config", configPath); exit != 0 {
 			t.Fatalf("apply exit=%d stderr=%s", exit, stderr)
 		}
-		if err := os.WriteFile(filepath.Join(root, id, artifact.UpFilename), []byte("SELECT 1;\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, id, artifact.UpFile), []byte("SELECT 1;\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		exit, _, stderr := runCLI(ctx, connectionString, "status", "--config", configPath)
@@ -125,7 +135,7 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 		historyTable := "sl_cli_lock_history_" + suffix
 		root := t.TempDir()
 		const lockKey int64 = 81003
-		configPath := writeCLIConfig(t, root, historyTable, lockKey, "safe", "80ms")
+		configPath := writeCLIConfig(t, root, historyTable, lockKey, "safe", "250ms")
 		defer cleanupCLIDatabase(pool, "", historyTable)
 		connection, err := pool.Acquire(ctx)
 		if err != nil {
@@ -203,7 +213,7 @@ func writeCLIArtifact(t *testing.T, root, id string, before, after migration.Sna
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := artifact.Write(root, built); err != nil {
+	if _, err := artifact.Write(root, built); err != nil {
 		t.Fatal(err)
 	}
 }
