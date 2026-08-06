@@ -10,7 +10,9 @@ const maxIdentifierBytes = 63
 
 // Schema is a database-independent representation of application entities.
 type Schema struct {
-	Tables []Table `json:"tables"`
+	Extensions []Extension `json:"extensions,omitempty"`
+	Enums      []EnumType  `json:"enums,omitempty"`
+	Tables     []Table     `json:"tables"`
 }
 
 // Table describes a relational table.
@@ -33,6 +35,7 @@ type Column struct {
 	PrimaryKey bool   `json:"primaryKey,omitempty"`
 	Unique     bool   `json:"unique,omitempty"`
 	Default    string `json:"default,omitempty"`
+	Generated  string `json:"generated,omitempty"`
 }
 
 // PrimaryKey describes a named table-level primary key, including composite keys.
@@ -69,6 +72,9 @@ type Index struct {
 func (s Schema) Validate() error {
 	tables := make(map[string]Table, len(s.Tables))
 	relationNames := map[string]string{}
+	if err := validateNativeSchema(s, relationNames); err != nil {
+		return err
+	}
 
 	for _, table := range s.Tables {
 		if err := validateIdentifier("table", table.Name); err != nil {
@@ -97,6 +103,12 @@ func (s Schema) Validate() error {
 			}
 			if strings.ContainsRune(column.Type, '\x00') {
 				return fmt.Errorf("schema: column %q.%q type contains NUL", table.Name, column.Name)
+			}
+			if strings.ContainsRune(column.Generated, '\x00') {
+				return fmt.Errorf("schema: generated expression for column %q.%q contains NUL", table.Name, column.Name)
+			}
+			if strings.TrimSpace(column.Generated) != "" && strings.TrimSpace(column.Default) != "" {
+				return fmt.Errorf("schema: generated column %q.%q cannot also have a default", table.Name, column.Name)
 			}
 			if _, exists := seenColumns[column.Name]; exists {
 				return fmt.Errorf("schema: duplicate column %q.%q", table.Name, column.Name)
