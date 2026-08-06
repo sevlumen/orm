@@ -98,7 +98,7 @@ func Write(config Config) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("ormgen: close temporary output: %w", err)
 	}
-	if err := os.Rename(temporaryName, output); err != nil {
+	if err := replaceFile(temporaryName, output); err != nil {
 		return fmt.Errorf("ormgen: replace generated file: %w", err)
 	}
 	return nil
