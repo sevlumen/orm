@@ -3,29 +3,17 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/migration"
 	"github.com/sevlumen/orm/schema"
 )
 
 func TestExplicitRenameMigrationAgainstPostgreSQL(t *testing.T) {
-	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
-	if connectionString == "" {
-		t.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
-	}
-
+	database := openIntegrationDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	oldEnum := "sl_old_status_" + suffix
@@ -67,59 +55,59 @@ func TestExplicitRenameMigrationAgainstPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldQualified := pgx.Identifier{oldAccounts}.Sanitize()
-	newQualified := pgx.Identifier{newCustomers}.Sanitize()
-	ordersQualified := pgx.Identifier{orders}.Sanitize()
+	oldQualified := quoteIdentifier(oldAccounts)
+	newQualified := quoteIdentifier(newCustomers)
+	ordersQualified := quoteIdentifier(orders)
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
 		for _, table := range []string{orders, oldAccounts, newCustomers} {
-			_, _ = pool.Exec(cleanupCtx, "DROP TABLE IF EXISTS "+pgx.Identifier{table}.Sanitize()+" CASCADE")
+			_, _ = database.ExecContext(cleanupCtx, "DROP TABLE IF EXISTS "+quoteIdentifier(table)+" CASCADE")
 		}
 		for _, enum := range []string{oldEnum, newEnum} {
-			_, _ = pool.Exec(cleanupCtx, "DROP TYPE IF EXISTS "+pgx.Identifier{enum}.Sanitize()+" CASCADE")
+			_, _ = database.ExecContext(cleanupCtx, "DROP TYPE IF EXISTS "+quoteIdentifier(enum)+" CASCADE")
 		}
 	}()
 
-	executeNativeScript(t, ctx, pool, initialSQL)
-	if _, err := pool.Exec(ctx, "INSERT INTO "+oldQualified+" (id, email) VALUES (42, 'customer@example.com')"); err != nil {
+	executeIntegrationScript(t, ctx, database, initialSQL)
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+oldQualified+" (id, email) VALUES (42, 'customer@example.com')"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+ordersQualified+" (id, account_id, status) VALUES (7, 42, 'new')"); err != nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+ordersQualified+" (id, account_id, status) VALUES (7, 42, 'new')"); err != nil {
 		t.Fatal(err)
 	}
 
-	executeNativeScript(t, ctx, pool, generated.Up)
+	executeIntegrationScript(t, ctx, database, generated.Up)
 	var customerID, orderCustomerID int64
 	var email, status string
-	if err := pool.QueryRow(ctx, "SELECT customer_id, email FROM "+newQualified).Scan(&customerID, &email); err != nil {
+	if err := database.QueryRowContext(ctx, "SELECT customer_id, email FROM "+newQualified).Scan(&customerID, &email); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, "SELECT customer_id, status::text FROM "+ordersQualified).Scan(&orderCustomerID, &status); err != nil {
+	if err := database.QueryRowContext(ctx, "SELECT customer_id, status::text FROM "+ordersQualified).Scan(&orderCustomerID, &status); err != nil {
 		t.Fatal(err)
 	}
 	if customerID != 42 || orderCustomerID != 42 || email != "customer@example.com" || status != "new" {
 		t.Fatalf("rename changed data: customer=%d order=%d email=%q status=%q", customerID, orderCustomerID, email, status)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+ordersQualified+" (id, customer_id, status) VALUES (8, 999, 'new')"); err == nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+ordersQualified+" (id, customer_id, status) VALUES (8, 999, 'new')"); err == nil {
 		t.Fatal("expected renamed foreign key to remain enforced")
 	}
 	var indexExists, constraintsExist bool
-	if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", newIndex).Scan(&indexExists); err != nil {
+	if err := database.QueryRowContext(ctx, "SELECT to_regclass($1) IS NOT NULL", newIndex).Scan(&indexExists); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) = 2 FROM pg_constraint WHERE conname = ANY($1::text[])`, []string{newPrimary, newForeignKey}).Scan(&constraintsExist); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT count(*) = 2 FROM pg_constraint WHERE conname IN ($1, $2)`, newPrimary, newForeignKey).Scan(&constraintsExist); err != nil {
 		t.Fatal(err)
 	}
 	if !indexExists || !constraintsExist {
 		t.Fatalf("renamed metadata missing: index=%v constraints=%v", indexExists, constraintsExist)
 	}
 
-	executeNativeScript(t, ctx, pool, generated.Down)
-	if err := pool.QueryRow(ctx, "SELECT id, email FROM "+oldQualified).Scan(&customerID, &email); err != nil {
+	executeIntegrationScript(t, ctx, database, generated.Down)
+	if err := database.QueryRowContext(ctx, "SELECT id, email FROM "+oldQualified).Scan(&customerID, &email); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, "SELECT account_id, status::text FROM "+ordersQualified).Scan(&orderCustomerID, &status); err != nil {
+	if err := database.QueryRowContext(ctx, "SELECT account_id, status::text FROM "+ordersQualified).Scan(&orderCustomerID, &status); err != nil {
 		t.Fatal(err)
 	}
 	if customerID != 42 || orderCustomerID != 42 || email != "customer@example.com" || status != "new" {
