@@ -2,13 +2,10 @@ package query
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"os"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type benchmarkOrder struct {
@@ -27,33 +24,33 @@ var (
 )
 
 func BenchmarkFetchOnePostgreSQL(b *testing.B) {
-	pool, tableName, cleanup := benchmarkDatabase(b, "fetch_one")
+	db, tableName, cleanup := benchmarkDatabase(b, "fetch_one")
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	qualified := pgx.Identifier{tableName}.Sanitize()
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, email text NOT NULL, active boolean NOT NULL)"); err != nil {
+	qualified := quoteIdentifier(tableName)
+	if _, err := db.ExecContext(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, email text NOT NULL, active boolean NOT NULL)"); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualified+" (id, email, active) VALUES (42, 'person@example.com', true)"); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO "+qualified+" (id, email, active) VALUES (42, 'person@example.com', true)"); err != nil {
 		b.Fatal(err)
 	}
 
 	table, columns := benchmarkUserMetadata(b, tableName)
-	executor, err := NewExecutor(pool)
+	executor, err := NewExecutor(db)
 	if err != nil {
 		b.Fatal(err)
 	}
 	builder := Select(table).Where(columns.ID.Eq(int64(42)))
 	directSQL := "SELECT \"id\", \"email\", \"active\" FROM " + qualified + " WHERE \"id\" = $1 LIMIT $2"
 
-	b.Run("DirectPgx", func(b *testing.B) {
+	b.Run("DirectSevlumenPostgres", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for b.Loop() {
+		for index := 0; index < b.N; index++ {
 			var value benchmarkUser
-			if err := pool.QueryRow(ctx, directSQL, int64(42), int64(1)).Scan(&value.ID, &value.Email, &value.Active); err != nil {
+			if err := db.QueryRowContext(ctx, directSQL, int64(42), int64(1)).Scan(&value.ID, &value.Email, &value.Active); err != nil {
 				b.Fatal(err)
 			}
 			benchmarkUserSink = value
@@ -63,7 +60,7 @@ func BenchmarkFetchOnePostgreSQL(b *testing.B) {
 	b.Run("TypedFetchOne", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
-		for b.Loop() {
+		for index := 0; index < b.N; index++ {
 			value, err := FetchOne(ctx, executor, builder)
 			if err != nil {
 				b.Fatal(err)
@@ -74,21 +71,21 @@ func BenchmarkFetchOnePostgreSQL(b *testing.B) {
 }
 
 func BenchmarkRelationLoadPostgreSQL(b *testing.B) {
-	pool, tableName, cleanup := benchmarkDatabase(b, "relation")
+	db, tableName, cleanup := benchmarkDatabase(b, "relation")
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	qualified := pgx.Identifier{tableName}.Sanitize()
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, account_id bigint NOT NULL)"); err != nil {
+	qualified := quoteIdentifier(tableName)
+	if _, err := db.ExecContext(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, account_id bigint NOT NULL)"); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualified+" (id, account_id) SELECT account_id * 10 + item, account_id FROM generate_series(1, 20) AS account_id CROSS JOIN generate_series(1, 3) AS item"); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO "+qualified+" (id, account_id) SELECT account_id * 10 + item, account_id FROM generate_series(1, 20) AS account_id CROSS JOIN generate_series(1, 3) AS item"); err != nil {
 		b.Fatal(err)
 	}
 
 	orderTable, orderColumns := benchmarkOrderMetadata(b, tableName)
-	executor, err := NewExecutor(pool)
+	executor, err := NewExecutor(db)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -115,12 +112,12 @@ func BenchmarkRelationLoadPostgreSQL(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.Run("DirectPgxBatch", func(b *testing.B) {
+	b.Run("DirectSevlumenPostgresBatch", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ReportMetric(1, "queries/op")
 		b.ResetTimer()
-		for b.Loop() {
-			rows, err := pool.Query(ctx, directStatement.SQL, directStatement.Args...)
+		for index := 0; index < b.N; index++ {
+			rows, err := db.QueryContext(ctx, directStatement.SQL, directStatement.Args...)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -149,7 +146,7 @@ func BenchmarkRelationLoadPostgreSQL(b *testing.B) {
 		b.ReportAllocs()
 		b.ReportMetric(1, "queries/op")
 		b.ResetTimer()
-		for b.Loop() {
+		for index := 0; index < b.N; index++ {
 			loaded, err := loader.Load(ctx, executor, sources)
 			if err != nil {
 				b.Fatal(err)
@@ -163,27 +160,16 @@ func BenchmarkRelationLoadPostgreSQL(b *testing.B) {
 	})
 }
 
-func benchmarkDatabase(b *testing.B, prefix string) (*pgxpool.Pool, string, func()) {
+func benchmarkDatabase(b *testing.B, prefix string) (*sql.DB, string, func()) {
 	b.Helper()
-	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
-	if connectionString == "" {
-		b.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		cancel()
-		b.Fatal(err)
-	}
+	db := openIntegrationDatabase(b)
 	tableName := fmt.Sprintf("sl_benchmark_%s_%x", prefix, time.Now().UnixNano())
 	cleanup := func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, _ = pool.Exec(cleanupCtx, "DROP TABLE IF EXISTS "+pgx.Identifier{tableName}.Sanitize())
-		pool.Close()
-		cancel()
+		_, _ = db.ExecContext(cleanupCtx, "DROP TABLE IF EXISTS "+quoteIdentifier(tableName))
 	}
-	return pool, tableName, cleanup
+	return db, tableName, cleanup
 }
 
 func benchmarkOrderMetadata(testing benchmarkTesting, tableName string) (*Table[benchmarkOrder], benchmarkOrderColumns) {
