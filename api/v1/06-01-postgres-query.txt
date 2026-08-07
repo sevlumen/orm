@@ -1,3 +1,7 @@
+func (c Column[T, V]) Ne(value V) Predicate[T]
+
+func (c Column[T, V]) NeColumn(other Column[T, V]) Predicate[T]
+
 func (c Column[T, V]) Set(value V) Assignment[T]
 
 func (c Column[T, V]) SetSQL(expression TrustedSQL) Assignment[T]
@@ -8,7 +12,7 @@ func (e *ExecutionError) Error() string
 
 func (e *ExecutionError) Unwrap() error
 
-func (e *Executor) Exec(ctx context.Context, operation string, statement Statement) (pgconn.CommandTag, error)
+func (e *Executor) Exec(ctx context.Context, operation string, statement Statement) (Result, error)
 
 func (e *RelationError) Error() string
 
@@ -34,17 +38,17 @@ func DeleteOne[T any](ctx context.Context, executor *Executor, builder DeleteBui
 
 func Delete[T any](table *Table[T]) DeleteBuilder[T]
 
-func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgconn.CommandTag, err error)
+func ExecBatch(ctx context.Context, executor *Executor, batch Batch) ([]Result, error)
 
-func ExecDelete[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) (pgconn.CommandTag, error)
+func ExecDelete[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) (Result, error)
 
-func ExecInsert[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) (pgconn.CommandTag, error)
+func ExecInsert[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) (Result, error)
 
-func ExecUpdate[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) (pgconn.CommandTag, error)
+func ExecUpdate[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) (Result, error)
 
 func FetchAll[T any](ctx context.Context, executor *Executor, builder SelectBuilder[T]) ([]T, error)
 
-func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...SelectBuilder[T]) (result [][]T, err error)
+func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...SelectBuilder[T]) ([][]T, error)
 
 func FetchOne[T any](ctx context.Context, executor *Executor, builder SelectBuilder[T]) (T, error)
 
@@ -53,7 +57,7 @@ func FetchOptional[T any](ctx context.Context, executor *Executor, builder Selec
 func InTransaction(
 	ctx context.Context,
 	beginner Beginner,
-	options pgx.TxOptions,
+	options TxOptions,
 	callback func(*Executor) error,
 	executorOptions ...ExecutorOption,
 ) (err error)
@@ -70,3 +74,22 @@ func MutableColumn() ColumnOptions
 
 func NewBatch() Batch
 
+func NewColumn[T, V any](table *Table[T], name string, options ...ColumnOptions) (Column[T, V], error)
+
+func NewExecutor(db DB, options ...ExecutorOption) (*Executor, error)
+
+func NewManyRelation[S any, T any, K comparable](
+	name string,
+	sourceKey KeyFunc[S, K],
+	targetKey KeyFunc[T, K],
+	query RelationQuery[T, K],
+	options ...RelationOption,
+) (ManyRelation[S, T, K], error)
+
+func NewOneRelation[S any, T any, K comparable](
+	name string,
+	sourceKey KeyFunc[S, K],
+	targetKey KeyFunc[T, K],
+	query RelationQuery[T, K],
+	options ...RelationOption,
+) (OneRelation[S, T, K], error)
