@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	initialMigrationID     = "20260806010000_initial_schema"
-	safeMigrationID        = "20260806020000_add_legacy_note"
-	upgradeMigrationID     = "20260806030000_upgrade_accounts"
-	destructiveMigrationID = "20260806040000_drop_legacy_note"
-	rcHistoryTable         = "__sevlumen_rc_migrations"
-	rcLockKey       int64  = 9120260807
+	initialMigrationID           = "20260806010000_initial_schema"
+	safeMigrationID              = "20260806020000_add_legacy_note"
+	upgradeMigrationID           = "20260806030000_upgrade_accounts"
+	destructiveMigrationID       = "20260806040000_drop_legacy_note"
+	rcHistoryTable               = "__sevlumen_rc_migrations"
+	rcLockKey              int64 = 9120260807
 )
 
 func TestReleaseCandidateWorkflow(t *testing.T) {
