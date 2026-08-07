@@ -23,9 +23,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          target='48f3d6df6b9dfd9cbeb5205db7c1bbad6bde3500'
-          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow Release --limit 20 --json databaseId,status,conclusion,event,headSha,headBranch,url,createdAt,updatedAt)"
-          jq --arg target "$target" '[.[] | select(.headSha == $target)] | first // {}' <<<"$runs" > .github/releases/v1.0.0.status.json
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow publish-v1.0.0.yml --limit 10 --json databaseId,status,conclusion,event,headSha,headBranch,url,createdAt,updatedAt)"
+          jq 'first // {}' <<<"$runs" > .github/releases/v1.0.0.status.json
           test "$(jq -r '.databaseId // empty' .github/releases/v1.0.0.status.json)" != ''
 
           git add .github/releases/v1.0.0.status.json
