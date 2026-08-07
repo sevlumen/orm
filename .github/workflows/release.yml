@@ -97,6 +97,7 @@ jobs:
 
     env:
       SEVLUMEN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/sevlumen_test?sslmode=disable
+      SEVLUMEN_RC_ORM_BINARY: /tmp/sevlumen-orm
 
     steps:
       - name: Check out exact tag
@@ -115,6 +116,12 @@ jobs:
           go mod download
           go mod verify
           go test -race ./postgres/... -count=1
+
+      - name: Build exact CLI for the RC application
+        run: go build -trimpath -o "$SEVLUMEN_RC_ORM_BINARY" ./cmd/orm
+
+      - name: Run maintained release-candidate application
+        run: go test -race ./examples/rcapp -run '^TestReleaseCandidateWorkflow$' -count=1 -v
 
   publish:
     name: Build, attest, and publish
