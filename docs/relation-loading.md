@@ -156,6 +156,6 @@ Source-key extractors, target-key extractors, and query factories are trusted ap
 
 ## Cancellation and concurrency
 
-Every chunk uses the supplied context. Cancellation stops subsequent chunks and propagates through the typed executor. Rows are closed by `FetchAll`, allowing the pool to recover or replace a connection according to pgx behavior.
+Every chunk uses the supplied context. Cancellation stops subsequent chunks and propagates through the typed executor. Rows are closed by `FetchAll`; `database/sql` and the Sevlumen PostgreSQL driver return a healthy connection to the pool or discard a backend whose protocol state cannot be trusted.
 
 A configured relation loader is immutable and safe for concurrent reuse when its key extractors and query factory are concurrency-safe. There is no shared result cache or identity map; every explicit load reflects its own database queries and transaction context.
