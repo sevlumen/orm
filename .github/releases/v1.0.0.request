@@ -1,0 +1,4 @@
+release=v1.0.0
+mode=annotated-tag-from-reviewed-commit
+target=48f3d6df6b9dfd9cbeb5205db7c1bbad6bde3500
+request=2026-08-07T12:55:00+07:00
