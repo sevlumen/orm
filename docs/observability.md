@@ -106,7 +106,7 @@ Useful metrics include:
 - affected-row histogram where meaningful;
 - migration execution duration;
 - advisory-lock wait duration measured externally;
-- connection-pool metrics from pgx.
+- connection-pool metrics from `sql.DB.Stats()`.
 
 Do not use raw SQL or unbounded identifiers as metric labels. Normalize operation names to avoid high-cardinality series.
 
