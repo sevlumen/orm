@@ -23,8 +23,12 @@ type App struct {
 	Out          io.Writer
 	Err          io.Writer
 	LookupEnv    func(string) (string, bool)
-	OpenDatabase func(string) (*sql.DB, error)
+	OpenDatabase func(context.Context, string) (*sql.DB, error)
 	BuildInfo    func() buildinfo.Info
+}
+
+func openDatabase(_ context.Context, databaseURL string) (*sql.DB, error) {
+	return postgres.Open(databaseURL)
 }
 
 // New returns a CLI runtime with process defaults.
@@ -34,7 +38,7 @@ func New() *App {
 		Out:          os.Stdout,
 		Err:          os.Stderr,
 		LookupEnv:    os.LookupEnv,
-		OpenDatabase: postgres.Open,
+		OpenDatabase: openDatabase,
 		BuildInfo:    buildinfo.Current,
 	}
 }
@@ -98,7 +102,7 @@ func (app *App) ensureDefaults() {
 		app.LookupEnv = os.LookupEnv
 	}
 	if app.OpenDatabase == nil {
-		app.OpenDatabase = postgres.Open
+		app.OpenDatabase = openDatabase
 	}
 	if app.BuildInfo == nil {
 		app.BuildInfo = buildinfo.Current
