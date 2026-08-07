@@ -3,13 +3,12 @@ package ormcli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestAppHelpAndUsageExitCodes(t *testing.T) {
@@ -85,7 +84,7 @@ func TestDatabaseErrorsRedactURLAndPassword(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	app := New()
 	app.Out, app.Err = &stdout, &stderr
-	app.OpenPool = func(context.Context, string) (*pgxpool.Pool, error) {
+	app.OpenDatabase = func(context.Context, string) (*sql.DB, error) {
 		return nil, errors.New("connection failed for " + databaseURL + " password super-secret")
 	}
 	exit := app.Run(context.Background(), []string{"status", "--database-url", databaseURL})
@@ -108,7 +107,7 @@ func TestCanceledContextReachesDatabaseCommandBoundary(t *testing.T) {
 	var stderr bytes.Buffer
 	app := New()
 	app.Out, app.Err = bytes.NewBuffer(nil), &stderr
-	app.OpenPool = func(ctx context.Context, _ string) (*pgxpool.Pool, error) {
+	app.OpenDatabase = func(ctx context.Context, _ string) (*sql.DB, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
