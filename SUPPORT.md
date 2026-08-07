@@ -7,7 +7,7 @@ The v1 release line supports:
 - Go 1.25 or newer within the current Go 1 compatibility promise;
 - PostgreSQL 14 through 18;
 - Linux, macOS, and Windows for the `orm` and `ormgen` commands;
-- PostgreSQL connections provided by `pgx/v5`.
+- PostgreSQL connections through `database/sql`, backed by `github.com/sevlumen/postgres`.
 
 CI continuously tests Go 1.25, the current stable Go toolchain, PostgreSQL 14, and PostgreSQL 18. Intermediate supported PostgreSQL majors are expected to follow the same SQL contract; release-candidate validation must exercise any major with a known behavioral difference.
 
