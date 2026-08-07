@@ -2,14 +2,12 @@ package query
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type executorFakeDB struct {
@@ -19,23 +17,25 @@ type executorFakeDB struct {
 	queryCalls atomic.Int64
 }
 
-func (db *executorFakeDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+func (db *executorFakeDB) ExecContext(context.Context, string, ...any) (sql.Result, error) {
 	db.execCalls.Add(1)
-	return pgconn.CommandTag{}, db.execErr
+	if db.execErr != nil {
+		return nil, db.execErr
+	}
+	return executorFakeResult{}, nil
 }
 
-func (db *executorFakeDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (db *executorFakeDB) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
 	db.queryCalls.Add(1)
 	return nil, db.queryErr
 }
 
-func (db *executorFakeDB) QueryRow(context.Context, string, ...any) pgx.Row {
-	return executorFakeRow{err: db.queryErr}
-}
+func (db *executorFakeDB) QueryRowContext(context.Context, string, ...any) *sql.Row { return nil }
 
-type executorFakeRow struct{ err error }
+type executorFakeResult struct{}
 
-func (row executorFakeRow) Scan(...any) error { return row.err }
+func (executorFakeResult) LastInsertId() (int64, error) { return 0, errors.New("unsupported") }
+func (executorFakeResult) RowsAffected() (int64, error) { return 1, nil }
 
 type panicObserver struct {
 	before atomic.Int64
