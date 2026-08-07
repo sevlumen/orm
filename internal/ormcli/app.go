@@ -2,91 +2,53 @@ package ormcli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/internal/buildinfo"
+	postgresdriver "github.com/sevlumen/postgres"
 )
 
-const outputVersion = 1
+const (
+	ExitSuccess = 0
+	ExitFailure = 1
+	ExitUsage   = 2
+)
 
-// App is a testable orm command runtime.
+var errUsage = errors.New("command usage error")
+
+// App is the testable ORM command runtime.
 type App struct {
-	In        io.Reader
-	Out       io.Writer
-	Err       io.Writer
-	LookupEnv func(string) (string, bool)
-	OpenPool  func(context.Context, string) (*pgxpool.Pool, error)
-	BuildInfo func() buildinfo.Info
+	Out          io.Writer
+	Err          io.Writer
+	LookupEnv    func(string) (string, bool)
+	OpenDatabase func(context.Context, string) (*sql.DB, error)
 }
 
-// New returns a CLI runtime with process defaults.
+// New returns a CLI runtime with production dependencies.
 func New() *App {
 	return &App{
-		In:        os.Stdin,
-		Out:       os.Stdout,
-		Err:       os.Stderr,
-		LookupEnv: os.LookupEnv,
-		OpenPool:  pgxpool.New,
-		BuildInfo: buildinfo.Current,
+		Out:          os.Stdout,
+		Err:          os.Stderr,
+		LookupEnv:    os.LookupEnv,
+		OpenDatabase: openPostgresDatabase,
 	}
+}
+
+func openPostgresDatabase(ctx context.Context, databaseURL string) (*sql.DB, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return postgresdriver.Open(databaseURL)
 }
 
 // Run executes one command and returns a stable process exit code.
 func (app *App) Run(ctx context.Context, args []string) int {
-	app.ensureDefaults()
-	if len(args) == 0 {
-		app.writeError(&usageError{message: "a command is required", usage: rootUsage})
-		return 2
-	}
-	var err error
-	switch args[0] {
-	case "help", "-h", "--help":
-		_, _ = io.WriteString(app.Out, rootUsage)
-		return 0
-	case "version":
-		err = app.runVersion(args[1:])
-	case "generate":
-		err = app.runGenerate(ctx, args[1:])
-	case "diff":
-		err = app.runDiff(ctx, args[1:])
-	case "validate":
-		err = app.runValidate(ctx, args[1:])
-	case "status":
-		err = app.runStatus(ctx, args[1:])
-	case "apply":
-		err = app.runApply(ctx, args[1:])
-	case "rollback":
-		err = app.runRollback(ctx, args[1:])
-	default:
-		err = &usageError{message: fmt.Sprintf("unknown command %q", args[0]), usage: rootUsage}
-	}
-	if err == nil {
-		return 0
-	}
-	var help *helpError
-	if errors.As(err, &help) {
-		_, _ = io.WriteString(app.Out, help.usage)
-		return 0
-	}
-	app.writeError(err)
-	var usage *usageError
-	if errors.As(err, &usage) {
-		return 2
-	}
-	return 1
-}
-
-func (app *App) ensureDefaults() {
-	if app.In == nil {
-		app.In = strings.NewReader("")
-	}
 	if app.Out == nil {
 		app.Out = io.Discard
 	}
@@ -96,118 +58,87 @@ func (app *App) ensureDefaults() {
 	if app.LookupEnv == nil {
 		app.LookupEnv = os.LookupEnv
 	}
-	if app.OpenPool == nil {
-		app.OpenPool = pgxpool.New
+	if app.OpenDatabase == nil {
+		app.OpenDatabase = openPostgresDatabase
 	}
-	if app.BuildInfo == nil {
-		app.BuildInfo = buildinfo.Current
+	if len(args) == 0 {
+		app.printRootHelp()
+		return ExitUsage
 	}
+	command := args[0]
+	var err error
+	switch command {
+	case "help", "-h", "--help":
+		app.printRootHelp()
+		return ExitSuccess
+	case "version":
+		err = app.runVersion(args[1:])
+	case "generate":
+		err = app.runGenerate(args[1:])
+	case "diff":
+		err = app.runDiff(args[1:])
+	case "validate":
+		err = app.runValidate(args[1:])
+	case "status":
+		err = app.runStatus(ctx, args[1:])
+	case "apply":
+		err = app.runApply(ctx, args[1:])
+	case "rollback":
+		err = app.runRollback(ctx, args[1:])
+	default:
+		err = fmt.Errorf("%w: unknown command %q", errUsage, command)
+	}
+	if err == nil {
+		return ExitSuccess
+	}
+	app.writeError(command, err)
+	if errors.Is(err, errUsage) {
+		return ExitUsage
+	}
+	return ExitFailure
 }
 
-func (app *App) writeError(err error) {
-	message := strings.TrimSpace(err.Error())
-	if message == "" {
-		message = "command failed"
+func (app *App) writeError(command string, err error) {
+	if strings.TrimSpace(command) == "" {
+		command = "orm"
 	}
-	_, _ = fmt.Fprintf(app.Err, "orm: %s\n", message)
-	var usage *usageError
-	if errors.As(err, &usage) && usage.usage != "" {
-		_, _ = io.WriteString(app.Err, usage.usage)
-	}
+	_, _ = fmt.Fprintf(app.Err, "%s: %v\n", command, err)
 }
 
-func (app *App) writeResult(jsonOutput bool, command string, result any, human string) error {
+func (app *App) printRootHelp() {
+	_, _ = fmt.Fprintln(app.Out, `Usage: orm <command> [options]
+
+Commands:
+  version    print build and source metadata
+  generate   generate typed table, column, and scanner metadata
+  diff       create one checksummed migration artifact from snapshots
+  validate   validate local snapshots and migration artifacts offline
+  status     compare local migrations with PostgreSQL history
+  apply      apply pending migrations within the configured risk gate
+  rollback   roll back the latest applied migrations with confirmation
+
+Run "orm <command> --help" for command-specific options.`)
+}
+
+func (app *App) runVersion(args []string) error {
+	jsonOutput := false
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		case "-h", "--help":
+			_, _ = fmt.Fprintln(app.Out, "Usage: orm version [--json]")
+			return nil
+		default:
+			return fmt.Errorf("%w: version does not accept %q", errUsage, arg)
+		}
+	}
+	info := buildinfo.Current()
 	if jsonOutput {
 		encoder := json.NewEncoder(app.Out)
 		encoder.SetEscapeHTML(false)
-		return encoder.Encode(outputEnvelope{Version: outputVersion, Command: command, Result: result})
+		return encoder.Encode(info)
 	}
-	if human != "" {
-		_, err := io.WriteString(app.Out, human)
-		return err
-	}
-	return nil
+	_, err := fmt.Fprintf(app.Out, "orm %s\ncommit: %s\nbuild date: %s\ndirty: %t\ngo: %s\nplatform: %s/%s\n", info.Version, info.Commit, info.Date, info.Dirty, info.GoVersion, info.GOOS, info.GOARCH)
+	return err
 }
-
-type outputEnvelope struct {
-	Version int    `json:"version"`
-	Command string `json:"command"`
-	Result  any    `json:"result"`
-}
-
-type usageError struct {
-	message string
-	usage   string
-	cause   error
-}
-
-func (e *usageError) Error() string {
-	if e.message != "" {
-		return e.message
-	}
-	if e.cause != nil {
-		return e.cause.Error()
-	}
-	return "invalid command usage"
-}
-
-func (e *usageError) Unwrap() error { return e.cause }
-
-type helpError struct{ usage string }
-
-func (e *helpError) Error() string { return "help requested" }
-
-func parseFlags(name, usage string, args []string, configure func(*flag.FlagSet)) (*flag.FlagSet, error) {
-	set := flag.NewFlagSet(name, flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	configure(set)
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil, &helpError{usage: usage}
-		}
-		return nil, &usageError{message: err.Error(), usage: usage, cause: err}
-	}
-	if set.NArg() != 0 {
-		return nil, &usageError{message: "unexpected positional arguments", usage: usage}
-	}
-	return set, nil
-}
-
-type optionalString struct {
-	value string
-	set   bool
-}
-
-func (value *optionalString) String() string { return value.value }
-
-func (value *optionalString) Set(input string) error {
-	value.value = input
-	value.set = true
-	return nil
-}
-
-type stringList []string
-
-func (values *stringList) String() string { return strings.Join(*values, ",") }
-
-func (values *stringList) Set(input string) error {
-	if strings.TrimSpace(input) == "" {
-		return fmt.Errorf("value cannot be empty")
-	}
-	*values = append(*values, input)
-	return nil
-}
-
-const rootUsage = `Usage: orm <command> [options]
-
-Commands:
-  version    Print release version and build provenance metadata.
-  generate   Generate typed table, column, and scanner metadata.
-  diff       Create a checksummed migration artifact from snapshots.
-  validate   Validate a snapshot or every local migration artifact.
-  status     Compare local artifacts with applied PostgreSQL history.
-  apply      Apply pending migrations transactionally.
-  rollback   Roll back applied migrations transactionally.
-
-Run "orm <command> --help" for command-specific options.
-`
