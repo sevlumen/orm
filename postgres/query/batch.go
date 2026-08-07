@@ -2,18 +2,11 @@ package query
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// BatchSender is implemented by pgxpool.Pool and pgx.Tx.
-type BatchSender interface {
-	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
-}
 
 type batchEntry struct {
 	operation string
@@ -96,9 +89,11 @@ func QueueDelete[T any](batch Batch, builder DeleteBuilder[T]) Batch {
 	return batch.QueueExec("batch delete", statement)
 }
 
-// ExecBatch executes every queued non-returning statement and closes all pgx
-// batch results on every path.
-func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgconn.CommandTag, err error) {
+// ExecBatch executes queued statements sequentially. When the Executor is
+// backed by sql.DB or sql.Conn, the batch is wrapped in one implicit
+// transaction. When it is already backed by sql.Tx, the caller owns the
+// surrounding transaction.
+func ExecBatch(ctx context.Context, executor *Executor, batch Batch) ([]Result, error) {
 	if executor == nil || isNilInterface(executor.db) {
 		return nil, fmt.Errorf("query: batch requires a configured executor")
 	}
@@ -108,73 +103,41 @@ func ExecBatch(ctx context.Context, executor *Executor, batch Batch) (tags []pgc
 	if len(batch.entries) == 0 {
 		return nil, fmt.Errorf("query: batch requires at least one statement")
 	}
-	sender, ok := executor.db.(BatchSender)
-	if !ok || isNilInterface(sender) {
-		return nil, fmt.Errorf("query: executor database does not support pgx batches")
-	}
-
-	pgxBatch := &pgx.Batch{}
 	for _, entry := range batch.entries {
-		if validateErr := executor.validate(entry.operation, entry.statement); validateErr != nil {
-			return nil, validateErr
+		if err := executor.validate(entry.operation, entry.statement); err != nil {
+			return nil, err
 		}
-		pgxBatch.Queue(entry.statement.SQL, entry.statement.Args...)
 	}
 
-	results := sender.SendBatch(ctx, pgxBatch)
-	if isNilInterface(results) {
-		return nil, fmt.Errorf("query: batch sender returned nil results")
+	var results []Result
+	err := executor.withImplicitTransaction(ctx, func(batchExecutor *Executor) error {
+		results = make([]Result, 0, len(batch.entries))
+		for _, entry := range batch.entries {
+			result, execErr := batchExecutor.Exec(ctx, entry.operation, entry.statement)
+			if execErr != nil {
+				return execErr
+			}
+			results = append(results, result)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	closed := false
-	defer func() {
-		if closed {
-			return
-		}
-		closeErr := results.Close()
-		if closeErr == nil {
-			return
-		}
-		wrapped := executionError("batch close", "", closeErr)
-		if err == nil {
-			err = wrapped
-		} else {
-			err = errors.Join(err, wrapped)
-		}
-	}()
-
-	tags = make([]pgconn.CommandTag, 0, len(batch.entries))
-	for _, entry := range batch.entries {
-		started := executor.start(ctx, entry.operation, entry.statement.SQL)
-		tag, execErr := results.Exec()
-		executor.finish(ctx, entry.operation, entry.statement.SQL, started, tag.RowsAffected(), execErr)
-		if execErr != nil {
-			return nil, executionError(entry.operation, entry.statement.SQL, execErr)
-		}
-		tags = append(tags, tag)
-	}
-	if closeErr := results.Close(); closeErr != nil {
-		closed = true
-		return nil, executionError("batch close", "", closeErr)
-	}
-	closed = true
-	return tags, nil
+	return results, nil
 }
 
-// FetchBatch executes homogeneous typed SELECT builders in one pgx batch.
-func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...SelectBuilder[T]) (result [][]T, err error) {
+// FetchBatch executes homogeneous typed SELECT builders sequentially. A pool or
+// pinned sql.Conn uses one implicit transaction so all reads share one backend
+// and snapshot; an existing sql.Tx is reused directly.
+func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...SelectBuilder[T]) ([][]T, error) {
 	if executor == nil || isNilInterface(executor.db) {
 		return nil, fmt.Errorf("query: select batch requires a configured executor")
 	}
 	if len(builders) == 0 {
 		return nil, fmt.Errorf("query: select batch requires at least one SELECT")
 	}
-	sender, ok := executor.db.(BatchSender)
-	if !ok || isNilInterface(sender) {
-		return nil, fmt.Errorf("query: executor database does not support pgx batches")
-	}
-
 	statements := make([]Statement, len(builders))
-	pgxBatch := &pgx.Batch{}
 	for index, builder := range builders {
 		statement, buildErr := builder.Build()
 		if buildErr != nil {
@@ -187,23 +150,51 @@ func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...Sele
 			return nil, fmt.Errorf("query: select batch item %d requires table metadata", index)
 		}
 		statements[index] = statement
-		pgxBatch.Queue(statement.SQL, statement.Args...)
 	}
 
-	results := sender.SendBatch(ctx, pgxBatch)
-	if isNilInterface(results) {
-		return nil, fmt.Errorf("query: select batch sender returned nil results")
+	var result [][]T
+	err := executor.withImplicitTransaction(ctx, func(batchExecutor *Executor) error {
+		result = make([][]T, len(builders))
+		for index, builder := range builders {
+			values, fetchErr := scanAll(ctx, batchExecutor, "batch select", builder.table, statements[index], nil)
+			if fetchErr != nil {
+				return fetchErr
+			}
+			result[index] = values
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	closed := false
+	return result, nil
+}
+
+func (e *Executor) withImplicitTransaction(ctx context.Context, callback func(*Executor) error) (err error) {
+	if _, alreadyTransaction := e.db.(*sql.Tx); alreadyTransaction {
+		return callback(e)
+	}
+	beginner, ok := e.db.(Beginner)
+	if !ok || isNilInterface(beginner) {
+		return callback(e)
+	}
+	tx, beginErr := beginner.BeginTx(ctx, nil)
+	if beginErr != nil {
+		return executionError("batch begin", "", beginErr)
+	}
+	if tx == nil {
+		return executionError("batch begin", "", errors.New("beginner returned nil transaction"))
+	}
+	committed := false
 	defer func() {
-		if closed {
+		if committed {
 			return
 		}
-		closeErr := results.Close()
-		if closeErr == nil {
+		rollbackErr := tx.Rollback()
+		if rollbackErr == nil || errors.Is(rollbackErr, sql.ErrTxDone) {
 			return
 		}
-		wrapped := executionError("select batch close", "", closeErr)
+		wrapped := executionError("batch rollback", "", rollbackErr)
 		if err == nil {
 			err = wrapped
 		} else {
@@ -211,44 +202,13 @@ func FetchBatch[T any](ctx context.Context, executor *Executor, builders ...Sele
 		}
 	}()
 
-	result = make([][]T, len(builders))
-	for index, builder := range builders {
-		started := executor.start(ctx, "batch select", statements[index].SQL)
-		rows, queryErr := results.Query()
-		if queryErr != nil {
-			if rows != nil {
-				rows.Close()
-			}
-			executor.finish(ctx, "batch select", statements[index].SQL, started, 0, queryErr)
-			return nil, executionError("batch select", statements[index].SQL, queryErr)
-		}
-		if rows == nil {
-			nilRowsErr := fmt.Errorf("query: database returned nil rows")
-			executor.finish(ctx, "batch select", statements[index].SQL, started, 0, nilRowsErr)
-			return nil, executionError("batch select", statements[index].SQL, nilRowsErr)
-		}
-		values := make([]T, 0)
-		for rows.Next() {
-			value, scanErr := builder.table.Scan(rows)
-			if scanErr != nil {
-				rows.Close()
-				executor.finish(ctx, "batch select", statements[index].SQL, started, int64(len(values)), scanErr)
-				return nil, executionError("batch select scan", statements[index].SQL, scanErr)
-			}
-			values = append(values, value)
-		}
-		rows.Close()
-		if rowsErr := rows.Err(); rowsErr != nil {
-			executor.finish(ctx, "batch select", statements[index].SQL, started, int64(len(values)), rowsErr)
-			return nil, executionError("batch select rows", statements[index].SQL, rowsErr)
-		}
-		result[index] = values
-		executor.finish(ctx, "batch select", statements[index].SQL, started, int64(len(values)), nil)
+	child := &Executor{db: tx, observer: e.observer, now: e.now}
+	if callbackErr := callback(child); callbackErr != nil {
+		return callbackErr
 	}
-	if closeErr := results.Close(); closeErr != nil {
-		closed = true
-		return nil, executionError("select batch close", "", closeErr)
+	if commitErr := tx.Commit(); commitErr != nil {
+		return executionError("batch commit", "", commitErr)
 	}
-	closed = true
-	return result, nil
+	committed = true
+	return nil
 }
