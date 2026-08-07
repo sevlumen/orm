@@ -91,3 +91,4 @@ func (c Column[T, V]) Lt(value V) Predicate[T]
 func (c Column[T, V]) Lte(value V) Predicate[T]
 
 func (c Column[T, V]) Name() string
+
