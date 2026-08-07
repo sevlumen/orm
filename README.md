@@ -30,7 +30,7 @@ Use an immutable release version instead of `@latest` in production automation a
 
 Sevlumen ORM is intentionally explicit:
 
-- PostgreSQL-first execution through `database/sql`, backed by `github.com/sevlumen/postgres`; no `pgx`, CGo, or `libpq` dependency.
+- PostgreSQL-first execution through `database/sql`, backed by `github.com/sevlumen/postgres`, without CGo or `libpq`.
 - Generated table/column metadata and direct scanners; no reflection on query hot paths.
 - Immutable typed builders for select, insert, update, delete, upsert, pagination, locking, and `RETURNING`.
 - Explicit transaction and batch APIs.
