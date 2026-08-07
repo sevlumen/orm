@@ -2,6 +2,7 @@ package ormcli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,31 +11,31 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/internal/buildinfo"
+	postgres "github.com/sevlumen/postgres"
 )
 
 const outputVersion = 1
 
 // App is a testable orm command runtime.
 type App struct {
-	In        io.Reader
-	Out       io.Writer
-	Err       io.Writer
-	LookupEnv func(string) (string, bool)
-	OpenPool  func(context.Context, string) (*pgxpool.Pool, error)
-	BuildInfo func() buildinfo.Info
+	In           io.Reader
+	Out          io.Writer
+	Err          io.Writer
+	LookupEnv    func(string) (string, bool)
+	OpenDatabase func(string) (*sql.DB, error)
+	BuildInfo    func() buildinfo.Info
 }
 
 // New returns a CLI runtime with process defaults.
 func New() *App {
 	return &App{
-		In:        os.Stdin,
-		Out:       os.Stdout,
-		Err:       os.Stderr,
-		LookupEnv: os.LookupEnv,
-		OpenPool:  pgxpool.New,
-		BuildInfo: buildinfo.Current,
+		In:           os.Stdin,
+		Out:          os.Stdout,
+		Err:          os.Stderr,
+		LookupEnv:    os.LookupEnv,
+		OpenDatabase: postgres.Open,
+		BuildInfo:    buildinfo.Current,
 	}
 }
 
@@ -96,8 +97,8 @@ func (app *App) ensureDefaults() {
 	if app.LookupEnv == nil {
 		app.LookupEnv = os.LookupEnv
 	}
-	if app.OpenPool == nil {
-		app.OpenPool = pgxpool.New
+	if app.OpenDatabase == nil {
+		app.OpenDatabase = postgres.Open
 	}
 	if app.BuildInfo == nil {
 		app.BuildInfo = buildinfo.Current
@@ -120,94 +121,47 @@ func (app *App) writeResult(jsonOutput bool, command string, result any, human s
 	if jsonOutput {
 		encoder := json.NewEncoder(app.Out)
 		encoder.SetEscapeHTML(false)
-		return encoder.Encode(outputEnvelope{Version: outputVersion, Command: command, Result: result})
+		return encoder.Encode(struct {
+			Version int    `json:"version"`
+			Command string `json:"command"`
+			Result  any    `json:"result"`
+		}{Version: outputVersion, Command: command, Result: result})
 	}
-	if human != "" {
-		_, err := io.WriteString(app.Out, human)
-		return err
-	}
-	return nil
+	_, err := io.WriteString(app.Out, human)
+	return err
 }
 
-type outputEnvelope struct {
-	Version int    `json:"version"`
-	Command string `json:"command"`
-	Result  any    `json:"result"`
+func parseFlags(set *flag.FlagSet, args []string, usage string) error {
+	set.SetOutput(io.Discard)
+	if err := set.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return &helpError{usage: usage}
+		}
+		return &usageError{message: err.Error(), usage: usage}
+	}
+	if set.NArg() != 0 {
+		return &usageError{message: "unexpected positional arguments", usage: usage}
+	}
+	return nil
 }
 
 type usageError struct {
 	message string
 	usage   string
-	cause   error
 }
 
-func (e *usageError) Error() string {
-	if e.message != "" {
-		return e.message
-	}
-	if e.cause != nil {
-		return e.cause.Error()
-	}
-	return "invalid command usage"
-}
-
-func (e *usageError) Unwrap() error { return e.cause }
+func (e *usageError) Error() string { return e.message }
 
 type helpError struct{ usage string }
 
 func (e *helpError) Error() string { return "help requested" }
 
-func parseFlags(name, usage string, args []string, configure func(*flag.FlagSet)) (*flag.FlagSet, error) {
-	set := flag.NewFlagSet(name, flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	configure(set)
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil, &helpError{usage: usage}
-		}
-		return nil, &usageError{message: err.Error(), usage: usage, cause: err}
-	}
-	if set.NArg() != 0 {
-		return nil, &usageError{message: "unexpected positional arguments", usage: usage}
-	}
-	return set, nil
-}
-
-type optionalString struct {
-	value string
-	set   bool
-}
-
-func (value *optionalString) String() string { return value.value }
-
-func (value *optionalString) Set(input string) error {
-	value.value = input
-	value.set = true
-	return nil
-}
-
-type stringList []string
-
-func (values *stringList) String() string { return strings.Join(*values, ",") }
-
-func (values *stringList) Set(input string) error {
-	if strings.TrimSpace(input) == "" {
-		return fmt.Errorf("value cannot be empty")
-	}
-	*values = append(*values, input)
-	return nil
-}
-
-const rootUsage = `Usage: orm <command> [options]
-
-Commands:
-  version    Print release version and build provenance metadata.
-  generate   Generate typed table, column, and scanner metadata.
-  diff       Create a checksummed migration artifact from snapshots.
-  validate   Validate a snapshot or every local migration artifact.
-  status     Compare local artifacts with applied PostgreSQL history.
-  apply      Apply pending migrations transactionally.
-  rollback   Roll back applied migrations transactionally.
-
-Run "orm <command> --help" for command-specific options.
+const rootUsage = `Usage:
+  orm generate [flags]
+  orm diff [flags]
+  orm validate [flags]
+  orm status [flags]
+  orm apply [flags]
+  orm rollback [flags]
+  orm version [--json]
 `
