@@ -58,5 +58,16 @@ jobs:
       - name: Build exact CLI under test
         run: go build -trimpath -o "$SEVLUMEN_RC_ORM_BINARY" ./cmd/orm
 
+      - name: Verify committed RC metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$SEVLUMEN_RC_ORM_BINARY" generate \
+            --dir ./examples/rcapp \
+            --output orm_gen.go \
+            --type Account \
+            --type Order
+          git diff --exit-code -- examples/rcapp/orm_gen.go
+
       - name: Run maintained release-candidate application
         run: go test -race ./examples/rcapp -run '^TestReleaseCandidateWorkflow$' -count=1 -v
