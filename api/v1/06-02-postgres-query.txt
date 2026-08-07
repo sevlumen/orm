@@ -91,3 +91,4 @@ type ExecutorOption func(*Executor) error
 type InsertBuilder[T any] struct {
 	// contains filtered or unexported fields
 }
+
