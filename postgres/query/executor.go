@@ -2,21 +2,26 @@ package query
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// DB is the shared execution surface implemented by pgxpool.Pool and pgx.Tx.
+// DB is the standard database/sql execution surface implemented by sql.DB,
+// sql.Conn, and sql.Tx. Driver-specific types are intentionally excluded from
+// the public query runtime contract.
 type DB interface {
-	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-	QueryRow(context.Context, string, ...any) pgx.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// Result is the driver-neutral outcome of a non-returning mutation.
+type Result struct {
+	RowsAffected int64
 }
 
 // Event describes one database operation without exposing argument values.
@@ -37,7 +42,7 @@ type Observer interface {
 	After(context.Context, Event)
 }
 
-// Executor executes built statements through pgx.
+// Executor executes built statements through database/sql.
 type Executor struct {
 	db       DB
 	observer Observer
@@ -98,17 +103,29 @@ func (e *ExecutionError) Unwrap() error { return e.Err }
 var ErrMultipleRows = errors.New("query: expected exactly one returned row")
 
 // Exec executes a non-returning statement.
-func (e *Executor) Exec(ctx context.Context, operation string, statement Statement) (pgconn.CommandTag, error) {
+func (e *Executor) Exec(ctx context.Context, operation string, statement Statement) (Result, error) {
 	if err := e.validate(operation, statement); err != nil {
-		return pgconn.CommandTag{}, err
+		return Result{}, err
 	}
 	started := e.start(ctx, operation, statement.SQL)
-	tag, err := e.db.Exec(ctx, statement.SQL, statement.Args...)
-	e.finish(ctx, operation, statement.SQL, started, tag.RowsAffected(), err)
+	sqlResult, err := e.db.ExecContext(ctx, statement.SQL, statement.Args...)
 	if err != nil {
-		return pgconn.CommandTag{}, executionError(operation, statement.SQL, err)
+		e.finish(ctx, operation, statement.SQL, started, 0, err)
+		return Result{}, executionError(operation, statement.SQL, err)
 	}
-	return tag, nil
+	if sqlResult == nil {
+		err = errors.New("query: database returned nil result")
+		e.finish(ctx, operation, statement.SQL, started, 0, err)
+		return Result{}, executionError(operation+" result", statement.SQL, err)
+	}
+	rowsAffected, rowsErr := sqlResult.RowsAffected()
+	if rowsErr != nil {
+		e.finish(ctx, operation, statement.SQL, started, 0, rowsErr)
+		return Result{}, executionError(operation+" result", statement.SQL, rowsErr)
+	}
+	result := Result{RowsAffected: rowsAffected}
+	e.finish(ctx, operation, statement.SQL, started, rowsAffected, nil)
+	return result, nil
 }
 
 // FetchAll executes a typed SELECT and scans every row without reflection.
@@ -146,9 +163,15 @@ func fetchOne[T any](ctx context.Context, executor *Executor, builder SelectBuil
 	}
 
 	started := executor.start(ctx, operation, statement.SQL)
-	value, err := builder.table.Scan(executor.db.QueryRow(ctx, statement.SQL, statement.Args...))
+	row := executor.db.QueryRowContext(ctx, statement.SQL, statement.Args...)
+	if row == nil {
+		err := errors.New("query: database returned nil row")
+		executor.finish(ctx, operation, statement.SQL, started, 0, err)
+		return zero, false, executionError(operation, statement.SQL, err)
+	}
+	value, err := builder.table.Scan(row)
 	if err != nil {
-		if optional && errors.Is(err, pgx.ErrNoRows) {
+		if optional && errors.Is(err, sql.ErrNoRows) {
 			executor.finish(ctx, operation, statement.SQL, started, 0, nil)
 			return zero, false, nil
 		}
@@ -214,16 +237,16 @@ func scanAll[T any](ctx context.Context, executor *Executor, operation string, t
 	}
 
 	started := executor.start(ctx, operation, statement.SQL)
-	rows, err := executor.db.Query(ctx, statement.SQL, statement.Args...)
+	rows, err := executor.db.QueryContext(ctx, statement.SQL, statement.Args...)
 	if err != nil {
 		if rows != nil {
-			rows.Close()
+			_ = rows.Close()
 		}
 		executor.finish(ctx, operation, statement.SQL, started, 0, err)
 		return nil, executionError(operation, statement.SQL, err)
 	}
 	if rows == nil {
-		err := fmt.Errorf("query: database returned nil rows")
+		err := errors.New("query: database returned nil rows")
 		executor.finish(ctx, operation, statement.SQL, started, 0, err)
 		return nil, executionError(operation, statement.SQL, err)
 	}
@@ -233,13 +256,12 @@ func scanAll[T any](ctx context.Context, executor *Executor, operation string, t
 	for rows.Next() {
 		value, scanErr := table.Scan(rows)
 		if scanErr != nil {
-			rows.Close()
+			_ = rows.Close()
 			executor.finish(ctx, operation, statement.SQL, started, int64(len(result)), scanErr)
 			return nil, executionError(operation+" scan", statement.SQL, scanErr)
 		}
 		result = append(result, value)
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		executor.finish(ctx, operation, statement.SQL, started, int64(len(result)), err)
 		return nil, executionError(operation+" rows", statement.SQL, err)
@@ -264,42 +286,38 @@ func returningExactlyOne[T any](ctx context.Context, executor *Executor, operati
 	}
 
 	started := executor.start(ctx, operation, statement.SQL)
-	rows, err := executor.db.Query(ctx, statement.SQL, statement.Args...)
+	rows, err := executor.db.QueryContext(ctx, statement.SQL, statement.Args...)
 	if err != nil {
 		if rows != nil {
-			rows.Close()
+			_ = rows.Close()
 		}
 		executor.finish(ctx, operation, statement.SQL, started, 0, err)
 		return zero, executionError(operation, statement.SQL, err)
 	}
 	if rows == nil {
-		err := fmt.Errorf("query: database returned nil rows")
+		err := errors.New("query: database returned nil rows")
 		executor.finish(ctx, operation, statement.SQL, started, 0, err)
 		return zero, executionError(operation, statement.SQL, err)
 	}
 	defer rows.Close()
 
 	if !rows.Next() {
-		rows.Close()
 		rowErr := rows.Err()
 		if rowErr == nil {
-			rowErr = pgx.ErrNoRows
+			rowErr = sql.ErrNoRows
 		}
 		executor.finish(ctx, operation, statement.SQL, started, 0, rowErr)
 		return zero, executionError(operation, statement.SQL, rowErr)
 	}
 	value, scanErr := table.Scan(rows)
 	if scanErr != nil {
-		rows.Close()
 		executor.finish(ctx, operation, statement.SQL, started, 0, scanErr)
 		return zero, executionError(operation+" scan", statement.SQL, scanErr)
 	}
 	if rows.Next() {
-		rows.Close()
 		executor.finish(ctx, operation, statement.SQL, started, 2, ErrMultipleRows)
 		return zero, executionError(operation, statement.SQL, ErrMultipleRows)
 	}
-	rows.Close()
 	if rowsErr := rows.Err(); rowsErr != nil {
 		executor.finish(ctx, operation, statement.SQL, started, 1, rowsErr)
 		return zero, executionError(operation+" rows", statement.SQL, rowsErr)
@@ -309,28 +327,28 @@ func returningExactlyOne[T any](ctx context.Context, executor *Executor, operati
 }
 
 // ExecInsert executes a non-returning INSERT or UPSERT.
-func ExecInsert[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) (pgconn.CommandTag, error) {
+func ExecInsert[T any](ctx context.Context, executor *Executor, builder InsertBuilder[T]) (Result, error) {
 	statement, err := builder.Build()
 	if err != nil {
-		return pgconn.CommandTag{}, err
+		return Result{}, err
 	}
 	return executor.Exec(ctx, "insert", statement)
 }
 
 // ExecUpdate executes a non-returning UPDATE.
-func ExecUpdate[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) (pgconn.CommandTag, error) {
+func ExecUpdate[T any](ctx context.Context, executor *Executor, builder UpdateBuilder[T]) (Result, error) {
 	statement, err := builder.Build()
 	if err != nil {
-		return pgconn.CommandTag{}, err
+		return Result{}, err
 	}
 	return executor.Exec(ctx, "update", statement)
 }
 
 // ExecDelete executes a non-returning DELETE.
-func ExecDelete[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) (pgconn.CommandTag, error) {
+func ExecDelete[T any](ctx context.Context, executor *Executor, builder DeleteBuilder[T]) (Result, error) {
 	statement, err := builder.Build()
 	if err != nil {
-		return pgconn.CommandTag{}, err
+		return Result{}, err
 	}
 	return executor.Exec(ctx, "delete", statement)
 }
@@ -351,24 +369,24 @@ func (e *Executor) validate(operation string, statement Statement) error {
 	return nil
 }
 
-func executionError(operation, sql string, err error) error {
-	return &ExecutionError{Operation: operation, SQL: sql, Err: err}
+func executionError(operation, sqlText string, err error) error {
+	return &ExecutionError{Operation: operation, SQL: sqlText, Err: err}
 }
 
-func (e *Executor) start(ctx context.Context, operation, sql string) time.Time {
+func (e *Executor) start(ctx context.Context, operation, sqlText string) time.Time {
 	started := e.now()
-	e.observeBefore(ctx, Event{Operation: operation, SQL: sql, StartedAt: started})
+	e.observeBefore(ctx, Event{Operation: operation, SQL: sqlText, StartedAt: started})
 	return started
 }
 
-func (e *Executor) finish(ctx context.Context, operation, sql string, started time.Time, rowsAffected int64, err error) {
+func (e *Executor) finish(ctx context.Context, operation, sqlText string, started time.Time, rowsAffected int64, err error) {
 	eventErr := err
 	if err != nil {
-		eventErr = executionError(operation, sql, err)
+		eventErr = executionError(operation, sqlText, err)
 	}
 	e.observeAfter(ctx, Event{
 		Operation:    operation,
-		SQL:          sql,
+		SQL:          sqlText,
 		StartedAt:    started,
 		Duration:     nonNegativeDuration(e.now().Sub(started)),
 		RowsAffected: rowsAffected,
