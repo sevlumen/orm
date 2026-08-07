@@ -1,0 +1,35 @@
+name: Capture v1.0.0 release status
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/releases/v1.0.0.status.request
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Capture release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='48f3d6df6b9dfd9cbeb5205db7c1bbad6bde3500'
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow Release --limit 20 --json databaseId,status,conclusion,event,headSha,headBranch,url,createdAt,updatedAt)"
+          jq --arg target "$target" '[.[] | select(.headSha == $target)] | first // {}' <<<"$runs" > .github/releases/v1.0.0.status.json
+          test "$(jq -r '.databaseId // empty' .github/releases/v1.0.0.status.json)" != ''
+
+          git add .github/releases/v1.0.0.status.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Capture ORM v1.0.0 release status"
+          git push origin HEAD:main
