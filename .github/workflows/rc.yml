@@ -1,0 +1,62 @@
+name: Release candidate application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rc:
+    name: RC application PostgreSQL ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '14'
+            image: postgres:14@sha256:2f439458ab6a57a925825ae14f9d06910e4fe4a41c8d4a0ae06397e65b707e1b
+          - version: '18'
+            image: postgres:18@sha256:d129b9577d274bb96cbd44d902bdeb1b935c89247d161241e9154cba64e13df4
+
+    services:
+      postgres:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sevlumen_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sevlumen_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      SEVLUMEN_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/sevlumen_test?sslmode=disable
+      SEVLUMEN_RC_ORM_BINARY: /tmp/sevlumen-orm
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25.x'
+          cache: false
+
+      - name: Verify dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Build exact CLI under test
+        run: go build -trimpath -o "$SEVLUMEN_RC_ORM_BINARY" ./cmd/orm
+
+      - name: Run maintained release-candidate application
+        run: go test -race ./examples/rcapp -run '^TestReleaseCandidateWorkflow$' -count=1 -v
