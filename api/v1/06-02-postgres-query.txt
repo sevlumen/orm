@@ -1,23 +1,3 @@
-func NewColumn[T, V any](table *Table[T], name string, options ...ColumnOptions) (Column[T, V], error)
-
-func NewExecutor(db DB, options ...ExecutorOption) (*Executor, error)
-
-func NewManyRelation[S any, T any, K comparable](
-	name string,
-	sourceKey KeyFunc[S, K],
-	targetKey KeyFunc[T, K],
-	query RelationQuery[T, K],
-	options ...RelationOption,
-) (ManyRelation[S, T, K], error)
-
-func NewOneRelation[S any, T any, K comparable](
-	name string,
-	sourceKey KeyFunc[S, K],
-	targetKey KeyFunc[T, K],
-	query RelationQuery[T, K],
-	options ...RelationOption,
-) (OneRelation[S, T, K], error)
-
 func NewTable[T any](name string, selectColumns []string, scan ScanFunc[T]) (*Table[T], error)
 
 func Not[T any](predicate Predicate[T]) Predicate[T]
@@ -60,12 +40,8 @@ type Batch struct {
 	// contains filtered or unexported fields
 }
 
-type BatchSender interface {
-	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
-}
-
 type Beginner interface {
-	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
 }
 
 type ColumnOptions struct {
@@ -82,12 +58,36 @@ type ConflictColumn[T any] struct {
 }
 
 type DB interface {
-	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-	QueryRow(context.Context, string, ...any) pgx.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 type DeleteBuilder[T any] struct {
 	// contains filtered or unexported fields
 }
 
+type Event struct {
+	Operation    string
+	SQL          string
+	StartedAt    time.Time
+	Duration     time.Duration
+	RowsAffected int64
+	Err          error
+}
+
+type ExecutionError struct {
+	Operation string
+	SQL       string
+	Err       error
+}
+
+type Executor struct {
+	// contains filtered or unexported fields
+}
+
+type ExecutorOption func(*Executor) error
+
+type InsertBuilder[T any] struct {
+	// contains filtered or unexported fields
+}
