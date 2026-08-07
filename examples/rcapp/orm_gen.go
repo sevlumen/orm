@@ -3,90 +3,90 @@
 package rcapp
 
 import (
-	query "github.com/sevlumen/orm/postgres/query"
+	ormquery "github.com/sevlumen/orm/postgres/query"
 )
 
 type AccountORMMetadata struct {
-	Table *query.Table[Account]
+	Table *ormquery.Table[Account]
 
-	ID          query.Column[Account, int64]
-	LoginEmail  query.Column[Account, string]
-	LegacyNote  query.Column[Account, *string]
-	DisplayName query.Column[Account, *string]
-	Active      query.Column[Account, bool]
+	ID          ormquery.Column[Account, int64]
+	LoginEmail  ormquery.Column[Account, string]
+	LegacyNote  ormquery.Column[Account, *string]
+	DisplayName ormquery.Column[Account, *string]
+	Active      ormquery.Column[Account, bool]
 }
 
 var AccountORM = newAccountORMMetadata()
 
 func newAccountORMMetadata() AccountORMMetadata {
-	table := mustAccountORMTable(query.NewTable[Account]("accounts", []string{"id", "login_email", "legacy_note", "display_name", "active"}, scanAccountORM))
+	table := mustAccountORMTable(ormquery.NewTable[Account]("accounts", []string{"id", "login_email", "legacy_note", "display_name", "active"}, scanAccountORM))
 	return AccountORMMetadata{
 		Table:       table,
-		ID:          mustAccountORMColumn(query.NewColumn[Account, int64](table, "id", query.InsertOnlyColumn())),
-		LoginEmail:  mustAccountORMColumn(query.NewColumn[Account, string](table, "login_email")),
-		LegacyNote:  mustAccountORMColumn(query.NewColumn[Account, *string](table, "legacy_note")),
-		DisplayName: mustAccountORMColumn(query.NewColumn[Account, *string](table, "display_name")),
-		Active:      mustAccountORMColumn(query.NewColumn[Account, bool](table, "active")),
+		ID:          mustAccountORMColumn(ormquery.NewColumn[Account, int64](table, "id", ormquery.InsertOnlyColumn())),
+		LoginEmail:  mustAccountORMColumn(ormquery.NewColumn[Account, string](table, "login_email")),
+		LegacyNote:  mustAccountORMColumn(ormquery.NewColumn[Account, *string](table, "legacy_note")),
+		DisplayName: mustAccountORMColumn(ormquery.NewColumn[Account, *string](table, "display_name")),
+		Active:      mustAccountORMColumn(ormquery.NewColumn[Account, bool](table, "active")),
 	}
 }
 
-func mustAccountORMTable(value *query.Table[Account], err error) *query.Table[Account] {
+func mustAccountORMTable(value *ormquery.Table[Account], err error) *ormquery.Table[Account] {
 	if err != nil {
 		panic("ormgen: generated Account table metadata: " + err.Error())
 	}
 	return value
 }
 
-func mustAccountORMColumn[V any](value query.Column[Account, V], err error) query.Column[Account, V] {
+func mustAccountORMColumn[V any](value ormquery.Column[Account, V], err error) ormquery.Column[Account, V] {
 	if err != nil {
 		panic("ormgen: generated Account column metadata: " + err.Error())
 	}
 	return value
 }
 
-func scanAccountORM(row query.RowScanner) (Account, error) {
+func scanAccountORM(row ormquery.RowScanner) (Account, error) {
 	var value Account
 	err := row.Scan(&value.ID, &value.LoginEmail, &value.LegacyNote, &value.DisplayName, &value.Active)
 	return value, err
 }
 
 type OrderORMMetadata struct {
-	Table *query.Table[Order]
+	Table *ormquery.Table[Order]
 
-	ID        query.Column[Order, int64]
-	AccountID query.Column[Order, int64]
-	Total     query.Column[Order, int64]
-	Status    query.Column[Order, string]
+	ID        ormquery.Column[Order, int64]
+	AccountID ormquery.Column[Order, int64]
+	Total     ormquery.Column[Order, int64]
+	Status    ormquery.Column[Order, string]
 }
 
 var OrderORM = newOrderORMMetadata()
 
 func newOrderORMMetadata() OrderORMMetadata {
-	table := mustOrderORMTable(query.NewTable[Order]("orders", []string{"id", "account_id", "total", "status"}, scanOrderORM))
+	table := mustOrderORMTable(ormquery.NewTable[Order]("orders", []string{"id", "account_id", "total", "status"}, scanOrderORM))
 	return OrderORMMetadata{
 		Table:     table,
-		ID:        mustOrderORMColumn(query.NewColumn[Order, int64](table, "id", query.InsertOnlyColumn())),
-		AccountID: mustOrderORMColumn(query.NewColumn[Order, int64](table, "account_id")),
-		Total:     mustOrderORMColumn(query.NewColumn[Order, int64](table, "total")),
-		Status:    mustOrderORMColumn(query.NewColumn[Order, string](table, "status")),
+		ID:        mustOrderORMColumn(ormquery.NewColumn[Order, int64](table, "id", ormquery.InsertOnlyColumn())),
+		AccountID: mustOrderORMColumn(ormquery.NewColumn[Order, int64](table, "account_id")),
+		Total:     mustOrderORMColumn(ormquery.NewColumn[Order, int64](table, "total")),
+		Status:    mustOrderORMColumn(ormquery.NewColumn[Order, string](table, "status")),
 	}
 }
 
-func mustOrderORMTable(value *query.Table[Order], err error) *query.Table[Order] {
+func mustOrderORMTable(value *ormquery.Table[Order], err error) *ormquery.Table[Order] {
 	if err != nil {
 		panic("ormgen: generated Order table metadata: " + err.Error())
 	}
 	return value
 }
 
-func mustOrderORMColumn[V any](value query.Column[Order, V], err error) query.Column[Order, V] {
+func mustOrderORMColumn[V any](value ormquery.Column[Order, V], err error) ormquery.Column[Order, V] {
 	if err != nil {
 		panic("ormgen: generated Order column metadata: " + err.Error())
 	}
 	return value
 }
 
-func scanOrderORM(row query.RowScanner) (Order, error) {
+func scanOrderORM(row ormquery.RowScanner) (Order, error) {
 	var value Order
 	err := row.Scan(&value.ID, &value.AccountID, &value.Total, &value.Status)
 	return value, err
