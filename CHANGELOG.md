@@ -9,27 +9,32 @@ All notable changes to Sevlumen ORM are documented here. The project follows sem
 - PostgreSQL-first entity schema parsing and deterministic DDL.
 - Versioned canonical snapshots, risk-aware diffs, explicit renames, and reversible migration rendering.
 - Checksummed migration artifacts with strict manifests, size limits, regular-file checks, and atomic publication.
-- Transactional PostgreSQL migration runner with advisory locking, history-prefix validation, apply, status, and rollback.
+- Transactional PostgreSQL migration runner with advisory locking, history-prefix validation, apply, status, rollback, and ambiguous-commit reconciliation.
 - Typed immutable select, insert, update, delete, upsert, locking, pagination, returning, batch, and transaction APIs.
 - Generated table/column metadata and direct scanners without runtime reflection on query hot paths.
 - Explicit one/many relation loading with bounded query counts and no lazy loading.
 - `orm` CLI for generate, diff, validate, status, apply, and rollback.
 - Versioned strict CLI configuration and deterministic JSON envelopes.
 - Observer hooks, structured errors, cancellation, secret redaction, and allocation budgets.
-- PostgreSQL 14/18 integration and SQL-injection attack-corpus tests.
-- Fuzzing, vulnerability analysis, immutable CI dependencies, and public API compatibility checks.
+- Native `database/sql` execution backed by `github.com/sevlumen/postgres` without CGo or `libpq`.
+- PostgreSQL 14/18 integration, SQL-injection attack-corpus tests, and a maintained end-to-end release-candidate application.
+- Fuzzing, vulnerability analysis, immutable CI dependencies, public API compatibility checks, reproducible release archives, checksums, SBOMs, and attestations.
 
 ### Security
 
 - Typed values are always represented as PostgreSQL positional parameters.
 - Identifier attacks are rejected or rendered as a single quoted identifier.
 - Database URLs and decoded/query-encoded/path-encoded passwords are redacted from CLI errors.
-- Upgraded `golang.org/x/text` to `v0.39.0` and `golang.org/x/sync` to `v0.21.0` after vulnerability scanning identified reachable `GO-2026-5970` in the earlier dependency graph.
+- Migration scripts are accepted only as trusted developer-authored artifacts; runtime application values remain on parameterized execution paths.
+- Pinned migration sessions are discarded when advisory-lock cleanup or protocol state cannot be trusted.
+- Ambiguous commit outcomes are reconciled against checksummed migration history instead of being retried blindly.
 
-### Known limits before v1.0.0
+### Release-candidate requirements
 
-- Release artifacts and provenance are not yet published.
-- The release candidate has not yet completed the maintained real-application exercise.
+- The same reviewed commit must pass Go 1.25/current quality and race tests.
+- PostgreSQL 14 and PostgreSQL 18 integration and maintained application workflows must pass.
+- Generated metadata, public API baselines, documentation links, fuzz smoke, and vulnerability analysis must pass.
+- Release artifacts must rebuild byte-for-byte and pass archive, checksum, manifest, executable-metadata, SBOM, and provenance verification.
 - Raw SQL and migration SQL remain trusted developer-authored inputs and must not receive untrusted runtime data.
 
 ## Release-note requirements
