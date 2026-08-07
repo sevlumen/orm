@@ -125,7 +125,7 @@ func (app *App) resolveDatabase(flags databaseFlags) (resolvedDatabase, error) {
 
 func (app *App) openRunner(parent context.Context, resolved resolvedDatabase) (*sql.DB, *runner.Runner, context.Context, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(parent, resolved.timeout)
-	db, err := app.OpenDatabase(resolved.url)
+	db, err := app.OpenDatabase(ctx, resolved.url)
 	if err != nil {
 		cancel()
 		return nil, nil, nil, nil, protectError(fmt.Errorf("connect to PostgreSQL: %w", err), resolved.secrets)
