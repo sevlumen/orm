@@ -6,6 +6,8 @@ import (
 	"github.com/sevlumen/orm/schema"
 )
 
+const releaseMarkerTable = "release_markers"
+
 // InitialSnapshot is the pre-v1 schema used to exercise an in-place upgrade.
 func InitialSnapshot() (migration.Snapshot, error) {
 	return migration.NewSnapshot(schema.Schema{Tables: []schema.Table{
@@ -14,6 +16,7 @@ func InitialSnapshot() (migration.Snapshot, error) {
 			Columns: []schema.Column{
 				{Name: "id", Type: "bigint", PrimaryKey: true},
 				{Name: "email", Type: "text", Unique: true},
+				{Name: "legacy_note", Type: "text", Nullable: true},
 				{Name: "active", Type: "boolean", Default: "true"},
 			},
 		},
@@ -35,29 +38,38 @@ func InitialSnapshot() (migration.Snapshot, error) {
 	}})
 }
 
-// SafeSnapshot adds only a nullable column and therefore exercises the safe
-// migration gate on an already populated legacy database.
+// SafeSnapshot adds a new independent table and therefore exercises a clearly
+// additive safe migration against an already populated legacy database.
 func SafeSnapshot() (migration.Snapshot, error) {
 	initial, err := InitialSnapshot()
 	if err != nil {
 		return migration.Snapshot{}, err
 	}
 	model := initial.Schema
-	for tableIndex := range model.Tables {
-		if model.Tables[tableIndex].Name == "users" {
-			model.Tables[tableIndex].Columns = append(model.Tables[tableIndex].Columns, schema.Column{
-				Name:     "legacy_note",
-				Type:     "text",
-				Nullable: true,
-			})
-		}
-	}
+	model.Tables = append(model.Tables, releaseMarkerSchema())
 	return migration.NewSnapshot(model)
 }
 
-// FinalSnapshot is generated from the maintained final application entities.
+// FinalSnapshot is generated from the maintained final application entities
+// and retains the additive release marker table created by the safe migration.
 func FinalSnapshot() (migration.Snapshot, error) {
-	return orm.BuildSnapshot(Account{}, Order{})
+	final, err := orm.BuildSnapshot(Account{}, Order{})
+	if err != nil {
+		return migration.Snapshot{}, err
+	}
+	model := final.Schema
+	model.Tables = append(model.Tables, releaseMarkerSchema())
+	return migration.NewSnapshot(model)
+}
+
+func releaseMarkerSchema() schema.Table {
+	return schema.Table{
+		Name: releaseMarkerTable,
+		Columns: []schema.Column{
+			{Name: "id", Type: "bigint", PrimaryKey: true},
+			{Name: "created_at", Type: "timestamptz", Default: "now()"},
+		},
+	}
 }
 
 // DestructiveSnapshot removes legacy_note to exercise destructive-risk gates
