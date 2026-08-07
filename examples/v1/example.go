@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/sevlumen/orm/postgres/query"
 )
 
@@ -94,7 +93,7 @@ func CRUDStatements(email string) (insert, selectOne, update, deleteOne query.St
 // InsertUserInTransaction executes one returning insert through an explicit
 // transaction. No ambient session or hidden save occurs.
 func InsertUserInTransaction(ctx context.Context, beginner query.Beginner, observer query.Observer, user User) error {
-	return query.InTransaction(ctx, beginner, pgx.TxOptions{}, func(executor *query.Executor) error {
+	return query.InTransaction(ctx, beginner, query.TxOptions{}, func(executor *query.Executor) error {
 		_, err := query.InsertOne(ctx, executor, query.Insert(UserTable).
 			Row(UserID.Set(user.ID), UserEmail.Set(user.Email), UserActive.Set(user.Active)).
 			Returning())
@@ -102,8 +101,9 @@ func InsertUserInTransaction(ctx context.Context, beginner query.Beginner, obser
 	}, query.WithObserver(observer))
 }
 
-// InsertUsersBatch sends an explicit pgx batch. The caller sees one operation
-// and no lazy query is triggered by reading entity fields.
+// InsertUsersBatch executes an explicit atomic batch. Statements run
+// sequentially on one transaction/backend; no lazy query is triggered by
+// reading entity fields.
 func InsertUsersBatch(ctx context.Context, executor *query.Executor, users []User) error {
 	batch := query.NewBatch()
 	for _, user := range users {

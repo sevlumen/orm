@@ -3,12 +3,8 @@ package query
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type integrationUser struct {
@@ -18,28 +14,19 @@ type integrationUser struct {
 }
 
 func TestTypedBuildersAgainstPostgreSQL(t *testing.T) {
-	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
-	if connectionString == "" {
-		t.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	db := openIntegrationDatabase(t)
 
 	tableName := fmt.Sprintf("sl_query_users_%x", time.Now().UnixNano())
-	qualified := pgx.Identifier{tableName}.Sanitize()
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, email text UNIQUE NOT NULL, active boolean NOT NULL)"); err != nil {
+	qualified := quoteIdentifier(tableName)
+	if _, err := db.ExecContext(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, email text UNIQUE NOT NULL, active boolean NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, _ = pool.Exec(cleanupCtx, "DROP TABLE IF EXISTS "+qualified)
+		_, _ = db.ExecContext(cleanupCtx, "DROP TABLE IF EXISTS "+qualified)
 	}()
 
 	table, err := NewTable[integrationUser](tableName, []string{"id", "email", "active"}, func(row RowScanner) (integrationUser, error) {
@@ -71,7 +58,7 @@ func TestTypedBuildersAgainstPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inserted, err := table.Scan(pool.QueryRow(ctx, insertStatement.SQL, insertStatement.Args...))
+	inserted, err := table.Scan(db.QueryRowContext(ctx, insertStatement.SQL, insertStatement.Args...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +73,7 @@ func TestTypedBuildersAgainstPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := table.Scan(pool.QueryRow(ctx, selectStatement.SQL, selectStatement.Args...))
+	selected, err := table.Scan(db.QueryRowContext(ctx, selectStatement.SQL, selectStatement.Args...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +90,7 @@ func TestTypedBuildersAgainstPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upserted, err := table.Scan(pool.QueryRow(ctx, upsertStatement.SQL, upsertStatement.Args...))
+	upserted, err := table.Scan(db.QueryRowContext(ctx, upsertStatement.SQL, upsertStatement.Args...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +106,7 @@ func TestTypedBuildersAgainstPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := table.Scan(pool.QueryRow(ctx, updateStatement.SQL, updateStatement.Args...))
+	updated, err := table.Scan(db.QueryRowContext(ctx, updateStatement.SQL, updateStatement.Args...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +121,7 @@ func TestTypedBuildersAgainstPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := table.Scan(pool.QueryRow(ctx, deleteStatement.SQL, deleteStatement.Args...))
+	deleted, err := table.Scan(db.QueryRowContext(ctx, deleteStatement.SQL, deleteStatement.Args...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +130,7 @@ func TestTypedBuildersAgainstPostgreSQL(t *testing.T) {
 	}
 
 	var remaining int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+qualified).Scan(&remaining); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+qualified).Scan(&remaining); err != nil {
 		t.Fatal(err)
 	}
 	if remaining != 0 {

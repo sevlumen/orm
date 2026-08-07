@@ -1,5 +1,13 @@
 package github.com/sevlumen/orm/postgres/query
 
+const (
+	IsolationDefault IsolationLevel = iota
+	IsolationReadUncommitted
+	IsolationReadCommitted
+	IsolationRepeatableRead
+	IsolationSerializable
+)
+
 func (b Batch) Len() int
 
 func (b Batch) QueueExec(operation string, statement Statement) Batch
@@ -83,8 +91,4 @@ func (c Column[T, V]) Lt(value V) Predicate[T]
 func (c Column[T, V]) Lte(value V) Predicate[T]
 
 func (c Column[T, V]) Name() string
-
-func (c Column[T, V]) Ne(value V) Predicate[T]
-
-func (c Column[T, V]) NeColumn(other Column[T, V]) Predicate[T]
 

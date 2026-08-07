@@ -1,27 +1,4 @@
-type Event struct {
-	Operation    string
-	SQL          string
-	StartedAt    time.Time
-	Duration     time.Duration
-	RowsAffected int64
-	Err          error
-}
-
-type ExecutionError struct {
-	Operation string
-	SQL       string
-	Err       error
-}
-
-type Executor struct {
-	// contains filtered or unexported fields
-}
-
-type ExecutorOption func(*Executor) error
-
-type InsertBuilder[T any] struct {
-	// contains filtered or unexported fields
-}
+type IsolationLevel uint8
 
 type KeyFunc[T any, K comparable] func(T) (key K, present bool)
 
@@ -67,6 +44,10 @@ type RelationOption func(*relationConfig) error
 
 type RelationQuery[T any, K comparable] func(keys []K) SelectBuilder[T]
 
+type Result struct {
+	RowsAffected int64
+}
+
 type RowScanner interface {
 	Scan(dest ...any) error
 }
@@ -92,6 +73,11 @@ type TransactionError struct {
 }
 
 type TrustedSQL string
+
+type TxOptions struct {
+	Isolation IsolationLevel
+	ReadOnly  bool
+}
 
 type UpdateBuilder[T any] struct {
 	// contains filtered or unexported fields

@@ -2,7 +2,10 @@ module github.com/sevlumen/orm
 
 go 1.25.0
 
-require github.com/jackc/pgx/v5 v5.10.0
+require (
+	github.com/jackc/pgx/v5 v5.10.0
+	github.com/sevlumen/postgres v1.1.0
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

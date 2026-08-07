@@ -2,16 +2,13 @@ package query
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type relationAccount struct {
@@ -85,18 +82,9 @@ func (observer *relationQueryObserver) Before(_ context.Context, event Event) {
 func (*relationQueryObserver) After(context.Context, Event) {}
 
 func TestTypedRelationsAgainstPostgreSQL(t *testing.T) {
-	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
-	if connectionString == "" {
-		t.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	db := openIntegrationDatabase(t)
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	names := map[string]string{
@@ -105,13 +93,13 @@ func TestTypedRelationsAgainstPostgreSQL(t *testing.T) {
 		"profiles": "sl_relation_profiles_" + suffix,
 		"settings": "sl_relation_settings_" + suffix,
 	}
-	createRelationTables(t, ctx, pool, names)
-	defer dropRelationTables(pool, names)
-	seedRelationTables(t, ctx, pool, names)
+	createRelationTables(t, ctx, db, names)
+	defer dropRelationTables(db, names)
+	seedRelationTables(t, ctx, db, names)
 
 	metadata := newRelationMetadata(names)
 	observer := &relationQueryObserver{}
-	executor, err := NewExecutor(pool, WithObserver(observer))
+	executor, err := NewExecutor(db, WithObserver(observer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +292,7 @@ func TestTypedRelationsAgainstPostgreSQL(t *testing.T) {
 	if cancelCtx.Err() == nil {
 		t.Fatal("relation cancellation context did not expire")
 	}
-	if err := pool.Ping(ctx); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		t.Fatalf("pool unusable after relation cancellation: %v", err)
 	}
 
@@ -336,41 +324,41 @@ func TestTypedRelationsAgainstPostgreSQL(t *testing.T) {
 	}
 }
 
-func createRelationTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool, names map[string]string) {
+func createRelationTables(t *testing.T, ctx context.Context, db *sql.DB, names map[string]string) {
 	t.Helper()
 	statements := []string{
-		"CREATE TABLE " + pgx.Identifier{names["accounts"]}.Sanitize() + " (id bigint PRIMARY KEY, manager_id bigint, tenant_id bigint NOT NULL)",
-		"CREATE TABLE " + pgx.Identifier{names["orders"]}.Sanitize() + " (id bigint PRIMARY KEY, account_id bigint NOT NULL, tenant_id bigint NOT NULL, active boolean NOT NULL)",
-		"CREATE TABLE " + pgx.Identifier{names["profiles"]}.Sanitize() + " (id bigint PRIMARY KEY, account_id bigint NOT NULL, label text NOT NULL)",
-		"CREATE TABLE " + pgx.Identifier{names["settings"]}.Sanitize() + " (tenant_id bigint NOT NULL, account_id bigint NOT NULL, value text NOT NULL)",
+		"CREATE TABLE " + quoteIdentifier(names["accounts"]) + " (id bigint PRIMARY KEY, manager_id bigint, tenant_id bigint NOT NULL)",
+		"CREATE TABLE " + quoteIdentifier(names["orders"]) + " (id bigint PRIMARY KEY, account_id bigint NOT NULL, tenant_id bigint NOT NULL, active boolean NOT NULL)",
+		"CREATE TABLE " + quoteIdentifier(names["profiles"]) + " (id bigint PRIMARY KEY, account_id bigint NOT NULL, label text NOT NULL)",
+		"CREATE TABLE " + quoteIdentifier(names["settings"]) + " (tenant_id bigint NOT NULL, account_id bigint NOT NULL, value text NOT NULL)",
 	}
 	for _, statement := range statements {
-		if _, err := pool.Exec(ctx, statement); err != nil {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
-func seedRelationTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool, names map[string]string) {
+func seedRelationTables(t *testing.T, ctx context.Context, db *sql.DB, names map[string]string) {
 	t.Helper()
 	statements := []string{
-		"INSERT INTO " + pgx.Identifier{names["accounts"]}.Sanitize() + " (id, manager_id, tenant_id) VALUES (1, NULL, 100), (2, 1, 100)",
-		"INSERT INTO " + pgx.Identifier{names["orders"]}.Sanitize() + " (id, account_id, tenant_id, active) VALUES (10, 1, 100, true), (11, 1, 100, true), (12, 1, 100, false), (20, 2, 100, true)",
-		"INSERT INTO " + pgx.Identifier{names["profiles"]}.Sanitize() + " (id, account_id, label) VALUES (100, 1, 'first'), (101, 1, 'duplicate'), (200, 2, 'second')",
-		"INSERT INTO " + pgx.Identifier{names["settings"]}.Sanitize() + " (tenant_id, account_id, value) VALUES (100, 1, 'one'), (100, 2, 'two')",
+		"INSERT INTO " + quoteIdentifier(names["accounts"]) + " (id, manager_id, tenant_id) VALUES (1, NULL, 100), (2, 1, 100)",
+		"INSERT INTO " + quoteIdentifier(names["orders"]) + " (id, account_id, tenant_id, active) VALUES (10, 1, 100, true), (11, 1, 100, true), (12, 1, 100, false), (20, 2, 100, true)",
+		"INSERT INTO " + quoteIdentifier(names["profiles"]) + " (id, account_id, label) VALUES (100, 1, 'first'), (101, 1, 'duplicate'), (200, 2, 'second')",
+		"INSERT INTO " + quoteIdentifier(names["settings"]) + " (tenant_id, account_id, value) VALUES (100, 1, 'one'), (100, 2, 'two')",
 	}
 	for _, statement := range statements {
-		if _, err := pool.Exec(ctx, statement); err != nil {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
-func dropRelationTables(pool *pgxpool.Pool, names map[string]string) {
+func dropRelationTables(db *sql.DB, names map[string]string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, key := range []string{"settings", "profiles", "orders", "accounts"} {
-		_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS "+pgx.Identifier{names[key]}.Sanitize())
+		_, _ = db.ExecContext(ctx, "DROP TABLE IF EXISTS "+quoteIdentifier(names[key]))
 	}
 }
 
