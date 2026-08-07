@@ -2,7 +2,7 @@
 
 PostgreSQL-first, entity-driven ORM, code generator, and migration tooling for Go.
 
-> Release-candidate hardening. The typed runtime, generated metadata, migration system, CLI, security tests, fuzzing, vulnerability scanning, and compatibility gates are implemented. Reproducible release artifacts and the maintained real-application exercise remain required before `v1.0.0`.
+> Release-candidate hardening. The typed runtime, generated metadata, migration system, CLI, security gates, reproducible artifacts, and maintained real-application exercise are implemented. A final `v1.0.0` tag requires the same reviewed candidate commit to pass every quality, PostgreSQL 14/18, release-reproducibility, and RC-application gate.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ Use an immutable release version instead of `@latest` in production automation a
 
 Sevlumen ORM is intentionally explicit:
 
-- PostgreSQL and `pgx/v5` first.
+- PostgreSQL-first execution through `database/sql`, backed by `github.com/sevlumen/postgres`; no `pgx`, CGo, or `libpq` dependency.
 - Generated table/column metadata and direct scanners; no reflection on query hot paths.
 - Immutable typed builders for select, insert, update, delete, upsert, pagination, locking, and `RETURNING`.
 - Explicit transaction and batch APIs.
@@ -98,7 +98,7 @@ The SQL contains placeholders; `email` remains in `statement.Args`.
 Execute through one reusable executor:
 
 ```go
-executor, err := query.NewExecutor(pool, query.WithObserver(observer))
+executor, err := query.NewExecutor(database, query.WithObserver(observer))
 user, found, err := query.FetchOptional(ctx, executor,
     query.Select(data.UserORM.Table).
         Where(data.UserORM.Email.Eq(email)).
@@ -191,13 +191,14 @@ See [CLI reference](docs/cli.md).
 
 Observer hooks expose operation name, parameterized SQL, timing, affected rows, and structured errors without a mandatory logging/tracing dependency. Query arguments are intentionally absent. See [Observability and redaction](docs/observability.md).
 
-Benchmarks compare builder/scanner overhead and end-to-end typed execution with direct `pgx`. CI enforces allocation budgets and runs fixed-iteration smoke benchmarks without claiming noisy hosted-runner latency ratios. See [Benchmark methodology](docs/benchmarks.md).
+Benchmarks compare builder/scanner overhead and end-to-end typed execution with direct `database/sql` calls backed by `sevlumen/postgres`. CI enforces allocation budgets and runs fixed-iteration smoke benchmarks without claiming noisy hosted-runner latency ratios. See [Benchmark methodology](docs/benchmarks.md).
 
 ## Compatibility and operations
 
 - [Compatibility policy](docs/compatibility.md)
 - [Upgrade guide](docs/upgrade.md)
 - [Recovery runbook](docs/recovery.md)
+- [Release-candidate evidence](docs/rc-evidence.md)
 - [Support policy](SUPPORT.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
@@ -221,6 +222,15 @@ PostgreSQL integration tests:
 ```text
 SEVLUMEN_TEST_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/sevlumen_test?sslmode=disable' \
 go test -race ./postgres/... -count=1
+```
+
+Maintained release-candidate application:
+
+```text
+go build -trimpath -o /tmp/sevlumen-orm ./cmd/orm
+SEVLUMEN_RC_ORM_BINARY=/tmp/sevlumen-orm \
+SEVLUMEN_TEST_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:5432/sevlumen_test?sslmode=disable' \
+go test -race ./examples/rcapp -run '^TestReleaseCandidateWorkflow$' -count=1 -v
 ```
 
 Security CI also runs vulnerability analysis, deterministic fuzz smoke, immutable dependency checks, and the reviewed public API baseline under `api/v1/`.
