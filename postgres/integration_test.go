@@ -3,27 +3,16 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/schema"
 )
 
 func TestGeneratedConstraintAndIndexSQLAgainstPostgreSQL(t *testing.T) {
-	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
-	if connectionString == "" {
-		t.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
-	}
+	database := openIntegrationDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	tableName := "sl_meta_" + suffix
@@ -56,47 +45,33 @@ func TestGeneratedConstraintAndIndexSQLAgainstPostgreSQL(t *testing.T) {
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, cleanupErr := pool.Exec(cleanupCtx, "DROP TABLE IF EXISTS "+pgx.Identifier{tableName}.Sanitize())
-		if cleanupErr != nil {
+		if _, cleanupErr := database.ExecContext(cleanupCtx, "DROP TABLE IF EXISTS "+quoteIdentifier(tableName)); cleanupErr != nil {
 			t.Logf("cleanup failed: %v", cleanupErr)
 		}
 	}()
 
-	connection, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	results, err := connection.Conn().PgConn().Exec(ctx, ddl).ReadAll()
-	connection.Release()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, result := range results {
-		if result.Err != nil {
-			t.Fatal(result.Err)
-		}
-	}
+	executeIntegrationScript(t, ctx, database, ddl)
 
-	qualified := pgx.Identifier{tableName}.Sanitize()
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualified+" (tenant_id, user_id, email) VALUES (1, 1, 'member@example.com')"); err != nil {
+	qualified := quoteIdentifier(tableName)
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+qualified+" (tenant_id, user_id, email) VALUES (1, 1, 'member@example.com')"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualified+" (tenant_id, user_id, email) VALUES (1, 2, 'member@example.com')"); err == nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+qualified+" (tenant_id, user_id, email) VALUES (1, 2, 'member@example.com')"); err == nil {
 		t.Fatal("expected unique constraint violation")
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualified+" (tenant_id, user_id, email) VALUES (2, 1, 'x')"); err == nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+qualified+" (tenant_id, user_id, email) VALUES (2, 1, 'x')"); err == nil {
 		t.Fatal("expected check constraint violation")
 	}
 
 	var constraints int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid = to_regclass($1) AND conname = ANY($2)`, tableName, []string{primaryName, uniqueName, checkName}).Scan(&constraints); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid = to_regclass($1) AND conname IN ($2, $3, $4)`, tableName, primaryName, uniqueName, checkName).Scan(&constraints); err != nil {
 		t.Fatal(err)
 	}
 	if constraints != 3 {
 		t.Fatalf("constraint count = %d, want 3", constraints)
 	}
 	var indexes int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = $1 AND indexname = ANY($2)`, tableName, []string{partialIndex, expressionIndex}).Scan(&indexes); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = $1 AND indexname IN ($2, $3)`, tableName, partialIndex, expressionIndex).Scan(&indexes); err != nil {
 		t.Fatal(err)
 	}
 	if indexes != 2 {
