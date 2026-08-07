@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,13 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/internal/ormcli"
 	"github.com/sevlumen/orm/migration"
 	"github.com/sevlumen/orm/migration/artifact"
 	pgdialect "github.com/sevlumen/orm/postgres"
 	"github.com/sevlumen/orm/schema"
+	sevlumenpostgres "github.com/sevlumen/postgres"
 )
 
 func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
@@ -26,11 +26,14 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
+	database, err := sevlumenpostgres.Open(connectionString)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	defer database.Close()
+	if err := database.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	t.Run("apply status risk and rollback", func(t *testing.T) {
@@ -61,7 +64,7 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 		secondID := "20260806000200_unique"
 		writeCLIArtifact(t, root, secondID, first, second)
 		configPath := writeCLIConfig(t, root, historyTable, 81001, "safe", "5s")
-		defer cleanupCLIDatabase(pool, tableName, historyTable)
+		defer cleanupCLIDatabase(database, tableName, historyTable)
 
 		exit, stdout, stderr := runCLI(ctx, connectionString, "status", "--config", configPath, "--json")
 		wantPending := `"pending":["` + firstID + `","` + secondID + `"]`
@@ -74,7 +77,7 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 			t.Fatalf("safe apply exit=%d stderr=%s", exit, stderr)
 		}
 		var applied int
-		if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+pgx.Identifier{"public", historyTable}.Sanitize()).Scan(&applied); err != nil {
+		if err := database.QueryRowContext(ctx, "SELECT count(*) FROM "+quoteCLIIdentifier("public", historyTable)).Scan(&applied); err != nil {
 			t.Fatal(err)
 		}
 		if applied != 0 {
@@ -95,7 +98,7 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 			t.Fatalf("rollback exit=%d stdout=%s stderr=%s", exit, stdout, stderr)
 		}
 		var exists bool
-		if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", tableName).Scan(&exists); err != nil {
+		if err := database.QueryRowContext(ctx, "SELECT to_regclass($1) IS NOT NULL", tableName).Scan(&exists); err != nil {
 			t.Fatal(err)
 		}
 		if exists {
@@ -118,7 +121,7 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 		id := "20260806000100_init"
 		writeCLIArtifact(t, root, id, migration.EmptySnapshot(), after)
 		configPath := writeCLIConfig(t, root, historyTable, 81002, "safe", "5s")
-		defer cleanupCLIDatabase(pool, tableName, historyTable)
+		defer cleanupCLIDatabase(database, tableName, historyTable)
 		if exit, _, stderr := runCLI(ctx, connectionString, "apply", "--config", configPath); exit != 0 {
 			t.Fatalf("apply exit=%d stderr=%s", exit, stderr)
 		}
@@ -136,16 +139,16 @@ func TestORMCLIWorkflowAgainstPostgreSQL(t *testing.T) {
 		root := t.TempDir()
 		const lockKey int64 = 81003
 		configPath := writeCLIConfig(t, root, historyTable, lockKey, "safe", "250ms")
-		defer cleanupCLIDatabase(pool, "", historyTable)
-		connection, err := pool.Acquire(ctx)
+		defer cleanupCLIDatabase(database, "", historyTable)
+		connection, err := database.Conn(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer connection.Release()
-		if _, err := connection.Exec(ctx, "SELECT pg_advisory_lock($1)", lockKey); err != nil {
+		defer connection.Close()
+		if _, err := connection.ExecContext(ctx, "SELECT pg_advisory_lock($1)", lockKey); err != nil {
 			t.Fatal(err)
 		}
-		defer connection.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", lockKey)
+		defer connection.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", lockKey)
 
 		exit, _, stderr := runCLI(ctx, connectionString, "status", "--config", configPath)
 		if exit != 1 || (!strings.Contains(stderr, "deadline") && !strings.Contains(stderr, "canceled")) {
@@ -218,11 +221,19 @@ func writeCLIArtifact(t *testing.T, root, id string, before, after migration.Sna
 	}
 }
 
-func cleanupCLIDatabase(pool *pgxpool.Pool, tableName, historyTable string) {
+func cleanupCLIDatabase(database *sql.DB, tableName, historyTable string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if tableName != "" {
-		_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS "+pgx.Identifier{tableName}.Sanitize()+" CASCADE")
+		_, _ = database.ExecContext(ctx, "DROP TABLE IF EXISTS "+quoteCLIIdentifier(tableName)+" CASCADE")
 	}
-	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS "+pgx.Identifier{"public", historyTable}.Sanitize()+" CASCADE")
+	_, _ = database.ExecContext(ctx, "DROP TABLE IF EXISTS "+quoteCLIIdentifier("public", historyTable)+" CASCADE")
+}
+
+func quoteCLIIdentifier(parts ...string) string {
+	quoted := make([]string, len(parts))
+	for index, part := range parts {
+		quoted[index] = `"` + strings.ReplaceAll(part, `"`, `""`) + `"`
+	}
+	return strings.Join(quoted, ".")
 }
