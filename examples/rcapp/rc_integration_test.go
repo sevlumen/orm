@@ -196,7 +196,7 @@ func exerciseTypedRuntime(t *testing.T, ctx context.Context, database *sql.DB) {
 	}
 
 	recorder.Reset()
-	relations, err := AccountOrders().Load(ctx, executor, []Account{legacy, created, {ID: 3}})
+	relations, err := AccountOrders().Load(ctx, executor, []Account{legacy, created, Account{ID: 3}})
 	if err != nil {
 		t.Fatal(err)
 	}
