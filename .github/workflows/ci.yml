@@ -89,6 +89,18 @@ jobs:
           go mod verify
           go list -mod=readonly -deps ./... >/dev/null
 
+      - name: Reject legacy driver references
+        shell: bash
+        run: |
+          set -euo pipefail
+          needle="$(printf '\160\147\170')"
+          matches="$(grep -RIn --exclude-dir=.git -- "$needle" . || true)"
+          if [[ -n "$matches" ]]; then
+            echo "Legacy PostgreSQL driver references remain:"
+            echo "$matches"
+            exit 1
+          fi
+
       - name: Run vulnerability analysis
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...
 

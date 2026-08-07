@@ -3,16 +3,16 @@ package runner
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/migration"
 	"github.com/sevlumen/orm/migration/artifact"
+	postgres "github.com/sevlumen/postgres"
 )
 
 const (
@@ -20,7 +20,6 @@ const (
 	defaultHistoryTable  = "__sevlumen_migrations"
 )
 
-// Config configures PostgreSQL migration execution.
 type Config struct {
 	MigrationsDir string
 	HistorySchema string
@@ -29,9 +28,8 @@ type Config struct {
 	MaximumRisk   migration.Risk
 }
 
-// Runner applies and rolls back migrations using one pinned PostgreSQL session.
 type Runner struct {
-	pool          *pgxpool.Pool
+	db            *sql.DB
 	migrationsDir string
 	historySQL    string
 	lockKey       int64
@@ -39,7 +37,6 @@ type Runner struct {
 	maximumRisk   migration.Risk
 }
 
-// MigrationState describes the relationship between a local artifact and history.
 type MigrationState string
 
 const (
@@ -47,7 +44,6 @@ const (
 	StateApplied MigrationState = "applied"
 )
 
-// Status describes one verified local migration.
 type Status struct {
 	ID            string
 	Checksum      string
@@ -57,14 +53,12 @@ type Status struct {
 	ExecutionTime time.Duration
 }
 
-// Result describes one migration applied or rolled back by a Runner call.
 type Result struct {
 	ID            string
 	Checksum      string
 	ExecutionTime time.Duration
 }
 
-// MigrationError adds the migration ID, direction, and execution stage.
 type MigrationError struct {
 	ID        string
 	Direction string
@@ -75,13 +69,11 @@ type MigrationError struct {
 func (e *MigrationError) Error() string {
 	return fmt.Sprintf("runner: migration %s %s failed during %s: %v", e.ID, e.Direction, e.Stage, e.Err)
 }
-
 func (e *MigrationError) Unwrap() error { return e.Err }
 
-// New validates configuration and creates a PostgreSQL migration runner.
-func New(pool *pgxpool.Pool, config Config) (*Runner, error) {
-	if pool == nil {
-		return nil, fmt.Errorf("runner: PostgreSQL pool is required")
+func New(db *sql.DB, config Config) (*Runner, error) {
+	if db == nil {
+		return nil, fmt.Errorf("runner: PostgreSQL database is required")
 	}
 	if strings.TrimSpace(config.MigrationsDir) == "" {
 		return nil, fmt.Errorf("runner: migrations directory is required")
@@ -101,40 +93,29 @@ func New(pool *pgxpool.Pool, config Config) (*Runner, error) {
 	if err := validateIdentifier(config.HistoryTable); err != nil {
 		return nil, fmt.Errorf("runner: invalid history table: %w", err)
 	}
-	identifier := pgx.Identifier{config.HistorySchema, config.HistoryTable}
 	lockKey := config.LockKey
 	if lockKey == 0 {
 		lockKey = deriveLockKey(config.HistorySchema + "." + config.HistoryTable)
 	}
-	return &Runner{
-		pool:          pool,
-		migrationsDir: config.MigrationsDir,
-		historySQL:    identifier.Sanitize(),
-		lockKey:       lockKey,
-		now:           time.Now,
-		maximumRisk:   config.MaximumRisk,
-	}, nil
+	return &Runner{db: db, migrationsDir: config.MigrationsDir, historySQL: quoteIdentifier(config.HistorySchema) + "." + quoteIdentifier(config.HistoryTable), lockKey: lockKey, now: time.Now, maximumRisk: config.MaximumRisk}, nil
 }
 
-// Status verifies local artifacts and returns applied/pending state.
 func (r *Runner) Status(ctx context.Context) ([]Status, error) {
-	conn, release, err := r.lockedConnection(ctx)
+	session, release, err := r.lockedSession(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return r.statusLocked(ctx, conn)
+	return r.statusLocked(ctx, session)
 }
 
-// Apply applies every pending migration in lexical ID order.
 func (r *Runner) Apply(ctx context.Context) ([]Result, error) {
-	conn, release, err := r.lockedConnection(ctx)
+	session, release, err := r.lockedSession(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-
-	statuses, err := r.statusLocked(ctx, conn)
+	statuses, err := r.statusLocked(ctx, session)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +131,6 @@ func (r *Runner) Apply(ctx context.Context) ([]Result, error) {
 			return nil, fmt.Errorf("runner: pending migration %q has %s risk, exceeding configured maximum %s", status.ID, risk, r.maximumRisk)
 		}
 	}
-
 	results := make([]Result, 0)
 	for _, status := range statuses {
 		if status.State == StateApplied {
@@ -165,14 +145,9 @@ func (r *Runner) Apply(ctx context.Context) ([]Result, error) {
 			return results, &MigrationError{ID: status.ID, Direction: "up", Stage: "checksum", Err: err}
 		}
 		if checksum != status.Checksum {
-			return results, &MigrationError{
-				ID:        status.ID,
-				Direction: "up",
-				Stage:     "preflight",
-				Err:       fmt.Errorf("artifact changed after preflight: before=%s after=%s", status.Checksum, checksum),
-			}
+			return results, &MigrationError{ID: status.ID, Direction: "up", Stage: "preflight", Err: fmt.Errorf("artifact changed after preflight: before=%s after=%s", status.Checksum, checksum)}
 		}
-		result, err := r.applyOne(ctx, conn, value)
+		result, err := r.applyOne(ctx, session, value)
 		if err != nil {
 			return results, err
 		}
@@ -181,28 +156,25 @@ func (r *Runner) Apply(ctx context.Context) ([]Result, error) {
 	return results, nil
 }
 
-// Rollback rolls back the latest count applied migrations.
 func (r *Runner) Rollback(ctx context.Context, count int) ([]Result, error) {
 	if count <= 0 {
 		return nil, fmt.Errorf("runner: rollback count must be positive")
 	}
-	conn, release, err := r.lockedConnection(ctx)
+	session, release, err := r.lockedSession(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-
-	applied, err := r.readHistory(ctx, conn)
+	applied, err := r.readHistory(ctx, session)
 	if err != nil {
 		return nil, err
 	}
 	if count > len(applied) {
 		return nil, fmt.Errorf("runner: cannot roll back %d migrations; only %d are applied", count, len(applied))
 	}
-	if _, err := r.statusLocked(ctx, conn); err != nil {
+	if _, err := r.statusLocked(ctx, session); err != nil {
 		return nil, err
 	}
-
 	results := make([]Result, 0, count)
 	for i := len(applied) - 1; i >= len(applied)-count; i-- {
 		history := applied[i]
@@ -210,7 +182,7 @@ func (r *Runner) Rollback(ctx context.Context, count int) ([]Result, error) {
 		if err != nil {
 			return results, &MigrationError{ID: history.ID, Direction: "down", Stage: "load", Err: err}
 		}
-		result, err := r.rollbackOne(ctx, conn, value, history.Checksum)
+		result, err := r.rollbackOne(ctx, session, value, history.Checksum)
 		if err != nil {
 			return results, err
 		}
@@ -219,56 +191,53 @@ func (r *Runner) Rollback(ctx context.Context, count int) ([]Result, error) {
 	return results, nil
 }
 
-func (r *Runner) lockedConnection(ctx context.Context) (*pgxpool.Conn, func(), error) {
-	conn, err := r.pool.Acquire(ctx)
+func (r *Runner) lockedSession(ctx context.Context) (*postgres.Session, func(), error) {
+	session, err := postgres.Acquire(ctx, r.db)
 	if err != nil {
-		return nil, nil, fmt.Errorf("runner: acquire PostgreSQL connection: %w", err)
+		return nil, nil, fmt.Errorf("runner: acquire PostgreSQL session: %w", err)
 	}
 	locked := false
 	release := func() {
 		if !locked {
-			conn.Release()
+			_ = session.Close()
 			return
 		}
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		var unlocked bool
-		err := conn.QueryRow(unlockCtx, "SELECT pg_advisory_unlock($1)", r.lockKey).Scan(&unlocked)
-		cancel()
+		err := session.QueryRowContext(unlockCtx, "SELECT pg_advisory_unlock($1)", r.lockKey).Scan(&unlocked)
 		if err != nil || !unlocked {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			raw := conn.Hijack()
-			_ = raw.Close(closeCtx)
-			closeCancel()
+			_ = session.Discard()
 			return
 		}
-		conn.Release()
+		_ = session.Close()
 	}
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", r.lockKey); err != nil {
+	if _, err := session.ExecContext(ctx, "SELECT pg_advisory_lock($1)", r.lockKey); err != nil {
 		release()
 		return nil, nil, fmt.Errorf("runner: acquire advisory lock: %w", err)
 	}
 	locked = true
-	if err := r.ensureHistory(ctx, conn); err != nil {
+	if err := r.ensureHistory(ctx, session); err != nil {
 		release()
 		return nil, nil, err
 	}
-	return conn, release, nil
+	return session, release, nil
 }
 
-func (r *Runner) ensureHistory(ctx context.Context, conn *pgxpool.Conn) error {
+func (r *Runner) ensureHistory(ctx context.Context, session *postgres.Session) error {
 	query := `CREATE TABLE IF NOT EXISTS ` + r.historySQL + ` (
     migration_id text PRIMARY KEY,
     checksum text NOT NULL CHECK (length(checksum) = 64),
     applied_at timestamptz NOT NULL,
     execution_time_ms bigint NOT NULL CHECK (execution_time_ms >= 0)
 )`
-	if _, err := conn.Exec(ctx, query); err != nil {
+	if _, err := session.ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("runner: ensure migration history table: %w", err)
 	}
 	return nil
 }
 
-func (r *Runner) statusLocked(ctx context.Context, conn *pgxpool.Conn) ([]Status, error) {
+func (r *Runner) statusLocked(ctx context.Context, session *postgres.Session) ([]Status, error) {
 	ids, err := artifact.List(r.migrationsDir)
 	if err != nil {
 		return nil, fmt.Errorf("runner: list migrations: %w", err)
@@ -285,8 +254,7 @@ func (r *Runner) statusLocked(ctx context.Context, conn *pgxpool.Conn) ([]Status
 		}
 		local = append(local, loadedArtifact{Artifact: value, Checksum: checksum})
 	}
-
-	history, err := r.readHistory(ctx, conn)
+	history, err := r.readHistory(ctx, session)
 	if err != nil {
 		return nil, err
 	}
@@ -301,15 +269,9 @@ func (r *Runner) statusLocked(ctx context.Context, conn *pgxpool.Conn) ([]Status
 			return nil, fmt.Errorf("runner: checksum mismatch for applied migration %q: database=%s local=%s", applied.ID, applied.Checksum, local[i].Checksum)
 		}
 	}
-
 	result := make([]Status, 0, len(local))
 	for i, value := range local {
-		status := Status{
-			ID:       value.Manifest.ID,
-			Checksum: value.Checksum,
-			Risk:     value.Manifest.Risk,
-			State:    StatePending,
-		}
+		status := Status{ID: value.Manifest.ID, Checksum: value.Checksum, Risk: value.Manifest.Risk, State: StatePending}
 		if i < len(history) {
 			appliedAt := history[i].AppliedAt
 			status.State = StateApplied
@@ -321,8 +283,12 @@ func (r *Runner) statusLocked(ctx context.Context, conn *pgxpool.Conn) ([]Status
 	return result, nil
 }
 
-func (r *Runner) readHistory(ctx context.Context, conn *pgxpool.Conn) ([]historyRow, error) {
-	rows, err := conn.Query(ctx, `SELECT migration_id, checksum, applied_at, execution_time_ms FROM `+r.historySQL+` ORDER BY migration_id`)
+type queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func (r *Runner) readHistory(ctx context.Context, db queryer) ([]historyRow, error) {
+	rows, err := db.QueryContext(ctx, `SELECT migration_id, checksum, applied_at, execution_time_ms FROM `+r.historySQL+` ORDER BY migration_id`)
 	if err != nil {
 		return nil, fmt.Errorf("runner: query migration history: %w", err)
 	}
@@ -343,7 +309,7 @@ func (r *Runner) readHistory(ctx context.Context, conn *pgxpool.Conn) ([]history
 	return result, nil
 }
 
-func (r *Runner) applyOne(ctx context.Context, conn *pgxpool.Conn, value artifact.Artifact) (Result, error) {
+func (r *Runner) applyOne(ctx context.Context, session *postgres.Session, value artifact.Artifact) (Result, error) {
 	id := value.Manifest.ID
 	if err := validateMigrationScript(string(value.UpSQL)); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "validate", Err: err}
@@ -352,34 +318,38 @@ func (r *Runner) applyOne(ctx context.Context, conn *pgxpool.Conn, value artifac
 	if err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "checksum", Err: err}
 	}
-
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
+	if _, err := session.ExecContext(ctx, `BEGIN`); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "begin", Err: err}
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			rollbackWithTimeout(tx)
+			rollbackSession(session)
 		}
 	}()
-
 	started := r.now()
-	if err := executeScript(ctx, tx, value.UpSQL); err != nil {
+	if _, err := session.ExecScriptContext(ctx, string(value.UpSQL)); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "execute", Err: err}
 	}
 	duration := nonNegativeDuration(r.now().Sub(started))
-	if _, err := tx.Exec(ctx, `INSERT INTO `+r.historySQL+` (migration_id, checksum, applied_at, execution_time_ms) VALUES ($1, $2, clock_timestamp(), $3)`, id, checksum, duration.Milliseconds()); err != nil {
+	if _, err := session.ExecContext(ctx, `INSERT INTO `+r.historySQL+` (migration_id, checksum, applied_at, execution_time_ms) VALUES ($1, $2, clock_timestamp(), $3)`, id, checksum, duration.Milliseconds()); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "history", Err: err}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if _, err := session.ExecContext(ctx, `COMMIT`); err != nil {
+		if errors.Is(err, postgres.ErrOperationOutcomeUnknown) {
+			_ = session.Discard()
+			if ok, reconcileErr := r.appliedWithChecksum(context.Background(), id, checksum); reconcileErr == nil && ok {
+				committed = true
+				return Result{ID: id, Checksum: checksum, ExecutionTime: duration}, nil
+			}
+		}
 		return Result{}, &MigrationError{ID: id, Direction: "up", Stage: "commit", Err: err}
 	}
 	committed = true
 	return Result{ID: id, Checksum: checksum, ExecutionTime: duration}, nil
 }
 
-func (r *Runner) rollbackOne(ctx context.Context, conn *pgxpool.Conn, value artifact.Artifact, expectedChecksum string) (Result, error) {
+func (r *Runner) rollbackOne(ctx context.Context, session *postgres.Session, value artifact.Artifact, expectedChecksum string) (Result, error) {
 	id := value.Manifest.ID
 	if err := validateMigrationScript(string(value.DownSQL)); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "validate", Err: err}
@@ -391,54 +361,68 @@ func (r *Runner) rollbackOne(ctx context.Context, conn *pgxpool.Conn, value arti
 	if checksum != expectedChecksum {
 		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "checksum", Err: fmt.Errorf("database=%s local=%s", expectedChecksum, checksum)}
 	}
-
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
+	if _, err := session.ExecContext(ctx, `BEGIN`); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "begin", Err: err}
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			rollbackWithTimeout(tx)
+			rollbackSession(session)
 		}
 	}()
-
 	started := r.now()
-	if err := executeScript(ctx, tx, value.DownSQL); err != nil {
+	if _, err := session.ExecScriptContext(ctx, string(value.DownSQL)); err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "execute", Err: err}
 	}
 	duration := nonNegativeDuration(r.now().Sub(started))
-	tag, err := tx.Exec(ctx, `DELETE FROM `+r.historySQL+` WHERE migration_id = $1 AND checksum = $2`, id, checksum)
+	result, err := session.ExecContext(ctx, `DELETE FROM `+r.historySQL+` WHERE migration_id = $1 AND checksum = $2`, id, checksum)
 	if err != nil {
 		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "history", Err: err}
 	}
-	if tag.RowsAffected() != 1 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "history", Err: err}
+	}
+	if affected != 1 {
 		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "history", Err: errors.New("history row changed concurrently")}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if _, err := session.ExecContext(ctx, `COMMIT`); err != nil {
+		if errors.Is(err, postgres.ErrOperationOutcomeUnknown) {
+			_ = session.Discard()
+			if ok, reconcileErr := r.appliedWithChecksum(context.Background(), id, checksum); reconcileErr == nil && !ok {
+				committed = true
+				return Result{ID: id, Checksum: checksum, ExecutionTime: duration}, nil
+			}
+		}
 		return Result{}, &MigrationError{ID: id, Direction: "down", Stage: "commit", Err: err}
 	}
 	committed = true
 	return Result{ID: id, Checksum: checksum, ExecutionTime: duration}, nil
 }
 
-func executeScript(ctx context.Context, tx pgx.Tx, script []byte) error {
-	results, err := tx.Conn().PgConn().Exec(ctx, string(script)).ReadAll()
+func (r *Runner) appliedWithChecksum(ctx context.Context, id, checksum string) (bool, error) {
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var actual string
+	err := r.db.QueryRowContext(checkCtx, `SELECT checksum FROM `+r.historySQL+` WHERE migration_id = $1`, id).Scan(&actual)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	for _, result := range results {
-		if result.Err != nil {
-			return result.Err
-		}
+	if actual != checksum {
+		return false, fmt.Errorf("runner: reconciled checksum mismatch for %q: database=%s local=%s", id, actual, checksum)
 	}
-	return nil
+	return true, nil
 }
 
-func rollbackWithTimeout(tx pgx.Tx) {
+func rollbackSession(session *postgres.Session) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = tx.Rollback(ctx)
+	if _, err := session.ExecContext(ctx, `ROLLBACK`); err != nil {
+		_ = session.Discard()
+	}
 }
 
 func parseRisk(value string) (migration.Risk, error) {
@@ -453,7 +437,6 @@ func parseRisk(value string) (migration.Risk, error) {
 		return 0, fmt.Errorf("runner: invalid artifact risk %q", value)
 	}
 }
-
 func validateIdentifier(value string) error {
 	if value == "" || len(value) > 63 {
 		return fmt.Errorf("identifier must contain 1 to 63 bytes")
@@ -466,13 +449,12 @@ func validateIdentifier(value string) error {
 	}
 	return nil
 }
-
+func quoteIdentifier(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
 func deriveLockKey(value string) int64 {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte("sevlumen.orm.migrations:" + value))
 	return int64(hash.Sum64())
 }
-
 func nonNegativeDuration(value time.Duration) time.Duration {
 	if value < 0 {
 		return 0
@@ -484,7 +466,6 @@ type loadedArtifact struct {
 	artifact.Artifact
 	Checksum string
 }
-
 type historyRow struct {
 	ID            string
 	Checksum      string

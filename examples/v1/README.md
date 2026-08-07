@@ -5,7 +5,7 @@ This package is compiled and tested by the repository's ordinary Go and race-tes
 - the entity tags and metadata shape produced by `orm generate` / `ormgen`;
 - parameterized insert, select, update, and delete builders;
 - explicit transactions through `InTransaction`;
-- explicit pgx batch execution;
+- explicit atomic batch execution through `database/sql`;
 - explicit many-relation loading with a bounded chunk size;
 - dependency-free observer hooks;
 - safe event summaries that never include query arguments.

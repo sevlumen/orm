@@ -3,28 +3,16 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/schema"
 )
 
 func TestGeneratedForeignKeysAgainstPostgreSQL(t *testing.T) {
-	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
-	if connectionString == "" {
-		t.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
-	}
-
+	database := openIntegrationDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	accounts := "sl_fk_accounts_" + suffix
@@ -85,74 +73,61 @@ func TestGeneratedForeignKeysAgainstPostgreSQL(t *testing.T) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
 		for _, table := range []string{orders, accounts, leftNodes, rightNodes} {
-			if _, cleanupErr := pool.Exec(cleanupCtx, "DROP TABLE IF EXISTS "+pgx.Identifier{table}.Sanitize()+" CASCADE"); cleanupErr != nil {
+			if _, cleanupErr := database.ExecContext(cleanupCtx, "DROP TABLE IF EXISTS "+quoteIdentifier(table)+" CASCADE"); cleanupErr != nil {
 				t.Logf("cleanup %s failed: %v", table, cleanupErr)
 			}
 		}
 	}()
 
-	connection, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	results, err := connection.Conn().PgConn().Exec(ctx, ddl).ReadAll()
-	connection.Release()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, result := range results {
-		if result.Err != nil {
-			t.Fatal(result.Err)
-		}
-	}
+	executeIntegrationScript(t, ctx, database, ddl)
 
-	qualifiedAccounts := pgx.Identifier{accounts}.Sanitize()
-	qualifiedOrders := pgx.Identifier{orders}.Sanitize()
+	qualifiedAccounts := quoteIdentifier(accounts)
+	qualifiedOrders := quoteIdentifier(orders)
 
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualifiedAccounts+" (tenant_id, id) VALUES (1, 10)"); err != nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+qualifiedAccounts+" (tenant_id, id) VALUES (1, 10)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualifiedOrders+" (id, tenant_id, account_id) VALUES (1, 1, 10)"); err != nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+qualifiedOrders+" (id, tenant_id, account_id) VALUES (1, 1, 10)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+qualifiedOrders+" (id, tenant_id, account_id) VALUES (2, 1, 999)"); err == nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+qualifiedOrders+" (id, tenant_id, account_id) VALUES (2, 1, 999)"); err == nil {
 		t.Fatal("expected foreign-key violation")
 	}
 
-	if _, err := pool.Exec(ctx, "DELETE FROM "+qualifiedAccounts+" WHERE tenant_id = 1 AND id = 10"); err != nil {
+	if _, err := database.ExecContext(ctx, "DELETE FROM "+qualifiedAccounts+" WHERE tenant_id = 1 AND id = 10"); err != nil {
 		t.Fatal(err)
 	}
 	var orderCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+qualifiedOrders).Scan(&orderCount); err != nil {
+	if err := database.QueryRowContext(ctx, "SELECT count(*) FROM "+qualifiedOrders).Scan(&orderCount); err != nil {
 		t.Fatal(err)
 	}
 	if orderCount != 0 {
 		t.Fatalf("cascade left %d orders", orderCount)
 	}
 
-	tx, err := pool.Begin(ctx)
+	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback(context.Background())
+			_ = tx.Rollback()
 		}
 	}()
-	if _, err := tx.Exec(ctx, "INSERT INTO "+qualifiedOrders+" (id, tenant_id, account_id) VALUES (3, 2, 20)"); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO "+qualifiedOrders+" (id, tenant_id, account_id) VALUES (3, 2, 20)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, "INSERT INTO "+qualifiedAccounts+" (tenant_id, id) VALUES (2, 20)"); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO "+qualifiedAccounts+" (tenant_id, id) VALUES (2, 20)"); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	committed = true
 
 	var foreignKeyCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = ANY(ARRAY[to_regclass($1), to_regclass($2), to_regclass($3)]::oid[])`, orders, leftNodes, rightNodes).Scan(&foreignKeyCount); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = ANY(ARRAY[to_regclass($1), to_regclass($2), to_regclass($3)]::oid[])`, orders, leftNodes, rightNodes).Scan(&foreignKeyCount); err != nil {
 		t.Fatal(err)
 	}
 	if foreignKeyCount != 3 {

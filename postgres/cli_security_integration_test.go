@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	sevlumenpostgres "github.com/sevlumen/postgres"
 )
 
 func TestORMCLIRejectsInjectedHistoryIdentifier(t *testing.T) {
@@ -19,17 +18,20 @@ func TestORMCLIRejectsInjectedHistoryIdentifier(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
+	database, err := sevlumenpostgres.Open(connectionString)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	defer database.Close()
+	if err := database.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	sentinel := "sl_cli_identifier_sentinel_" + suffix
 	maliciousHistory := `history"; DROP TABLE ` + sentinel + `; --`
-	defer cleanupCLIDatabase(pool, sentinel, maliciousHistory)
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+pgx.Identifier{sentinel}.Sanitize()+" (id bigint PRIMARY KEY)"); err != nil {
+	defer cleanupCLIDatabase(database, sentinel, maliciousHistory)
+	if _, err := database.ExecContext(ctx, "CREATE TABLE "+quoteCLIIdentifier(sentinel)+" (id bigint PRIMARY KEY)"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -41,7 +43,7 @@ func TestORMCLIRejectsInjectedHistoryIdentifier(t *testing.T) {
 	if !strings.Contains(stderr, "invalid history table") {
 		t.Fatalf("status did not reject injected identifier explicitly: %s", stderr)
 	}
-	assertInjectionTableExists(t, ctx, pool, sentinel)
+	assertInjectionTableExists(t, ctx, database, sentinel)
 
 	var maliciousExists bool
 	const catalogQuery = `SELECT EXISTS (
@@ -50,7 +52,7 @@ func TestORMCLIRejectsInjectedHistoryIdentifier(t *testing.T) {
 		JOIN pg_namespace AS n ON n.oid = c.relnamespace
 		WHERE n.nspname = 'public' AND c.relname = $1
 	)`
-	if err := pool.QueryRow(ctx, catalogQuery, maliciousHistory).Scan(&maliciousExists); err != nil {
+	if err := database.QueryRowContext(ctx, catalogQuery, maliciousHistory).Scan(&maliciousExists); err != nil {
 		t.Fatal(err)
 	}
 	if maliciousExists {

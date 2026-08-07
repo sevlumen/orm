@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -11,18 +12,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/migration"
 	"github.com/sevlumen/orm/migration/artifact"
-	"github.com/sevlumen/orm/postgres"
+	ormpostgres "github.com/sevlumen/orm/postgres"
 	"github.com/sevlumen/orm/schema"
+	sevlumenpostgres "github.com/sevlumen/postgres"
 )
 
 func TestNewValidatesConfiguration(t *testing.T) {
 	t.Parallel()
 	if _, err := New(nil, Config{MigrationsDir: "migrations"}); err == nil {
-		t.Fatal("expected nil pool error")
+		t.Fatal("expected nil database error")
 	}
 }
 
@@ -60,7 +60,7 @@ func TestArtifactChecksumChangesWithManifestMetadata(t *testing.T) {
 }
 
 func TestRunnerIntegrationApplyStatusRollback(t *testing.T) {
-	pool := integrationPool(t)
+	database := integrationDatabase(t)
 	root := t.TempDir()
 	suffix := integrationSuffix()
 	table := "sevlumen_users_" + suffix
@@ -69,13 +69,13 @@ func TestRunnerIntegrationApplyStatusRollback(t *testing.T) {
 	buildArtifact(t, root, "20260805210000_create_users", fmt.Sprintf("CREATE TABLE %s (id bigint PRIMARY KEY);", table), fmt.Sprintf("DROP TABLE %s;", table), migration.RiskSafe)
 	buildArtifact(t, root, "20260805210100_add_email", fmt.Sprintf("ALTER TABLE %s ADD COLUMN email text;", table), fmt.Sprintf("ALTER TABLE %s DROP COLUMN email;", table), migration.RiskSafe)
 
-	runner, err := New(pool, Config{MigrationsDir: root, HistoryTable: history})
+	runner, err := New(database, Config{MigrationsDir: root, HistoryTable: history})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	defer cleanupIntegrationObjects(t, pool, table, history)
+	defer cleanupIntegrationObjects(t, database, table, history)
 
 	status, err := runner.Status(ctx)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestRunnerIntegrationApplyStatusRollback(t *testing.T) {
 	if again, err := runner.Apply(ctx); err != nil || len(again) != 0 {
 		t.Fatalf("second Apply() = %#v, %v", again, err)
 	}
-	if !columnExists(t, ctx, pool, table, "email") {
+	if !columnExists(t, ctx, database, table, "email") {
 		t.Fatal("email column was not created")
 	}
 
@@ -105,41 +105,41 @@ func TestRunnerIntegrationApplyStatusRollback(t *testing.T) {
 	if len(rolledBack) != 1 || rolledBack[0].ID != "20260805210100_add_email" {
 		t.Fatalf("unexpected rollback: %#v", rolledBack)
 	}
-	if columnExists(t, ctx, pool, table, "email") {
+	if columnExists(t, ctx, database, table, "email") {
 		t.Fatal("email column still exists after rollback")
 	}
 	if _, err := runner.Rollback(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	if tableExists(t, ctx, pool, table) {
+	if tableExists(t, ctx, database, table) {
 		t.Fatal("table still exists after full rollback")
 	}
 }
 
 func TestRunnerIntegrationFailureRollsBackMigrationAndHistory(t *testing.T) {
-	pool := integrationPool(t)
+	database := integrationDatabase(t)
 	root := t.TempDir()
 	suffix := integrationSuffix()
 	table := "sevlumen_failed_" + suffix
 	history := "sevlumen_history_" + suffix
 	buildArtifact(t, root, "20260805220000_broken", fmt.Sprintf("CREATE TABLE %s (id bigint); SELECT missing_column FROM %s;", table, table), fmt.Sprintf("DROP TABLE %s;", table), migration.RiskSafe)
 
-	runner, err := New(pool, Config{MigrationsDir: root, HistoryTable: history})
+	runner, err := New(database, Config{MigrationsDir: root, HistoryTable: history})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	defer cleanupIntegrationObjects(t, pool, table, history)
+	defer cleanupIntegrationObjects(t, database, table, history)
 
 	if _, err := runner.Apply(ctx); err == nil {
 		t.Fatal("expected migration failure")
 	}
-	if tableExists(t, ctx, pool, table) {
+	if tableExists(t, ctx, database, table) {
 		t.Fatal("failed migration left its table behind")
 	}
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.`+history).Scan(&count); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM `+quoteTestIdentifier("public", history)).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -148,24 +148,24 @@ func TestRunnerIntegrationFailureRollsBackMigrationAndHistory(t *testing.T) {
 }
 
 func TestRunnerIntegrationAdvisoryLockSerializesConcurrentApply(t *testing.T) {
-	pool := integrationPool(t)
+	database := integrationDatabase(t)
 	root := t.TempDir()
 	suffix := integrationSuffix()
 	table := "sevlumen_concurrent_" + suffix
 	history := "sevlumen_history_" + suffix
 	buildArtifact(t, root, "20260805230000_create_concurrent", fmt.Sprintf("CREATE TABLE %s (id bigint); SELECT pg_sleep(0.2);", table), fmt.Sprintf("DROP TABLE %s;", table), migration.RiskSafe)
 
-	first, err := New(pool, Config{MigrationsDir: root, HistoryTable: history})
+	first, err := New(database, Config{MigrationsDir: root, HistoryTable: history})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := New(pool, Config{MigrationsDir: root, HistoryTable: history})
+	second, err := New(database, Config{MigrationsDir: root, HistoryTable: history})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	defer cleanupIntegrationObjects(t, pool, table, history)
+	defer cleanupIntegrationObjects(t, database, table, history)
 
 	var wait sync.WaitGroup
 	wait.Add(2)
@@ -197,7 +197,7 @@ func TestRunnerIntegrationAdvisoryLockSerializesConcurrentApply(t *testing.T) {
 }
 
 func TestRunnerIntegrationRiskGatePreflightsAllPendingMigrations(t *testing.T) {
-	pool := integrationPool(t)
+	database := integrationDatabase(t)
 	root := t.TempDir()
 	suffix := integrationSuffix()
 	table := "sevlumen_risk_" + suffix
@@ -205,18 +205,18 @@ func TestRunnerIntegrationRiskGatePreflightsAllPendingMigrations(t *testing.T) {
 	buildArtifact(t, root, "20260805233000_safe", fmt.Sprintf("CREATE TABLE %s (id bigint);", table), fmt.Sprintf("DROP TABLE %s;", table), migration.RiskSafe)
 	buildArtifact(t, root, "20260805233100_destructive", fmt.Sprintf("ALTER TABLE %s DROP COLUMN id;", table), fmt.Sprintf("ALTER TABLE %s ADD COLUMN id bigint;", table), migration.RiskDestructive)
 
-	runner, err := New(pool, Config{MigrationsDir: root, HistoryTable: history})
+	runner, err := New(database, Config{MigrationsDir: root, HistoryTable: history})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	defer cleanupIntegrationObjects(t, pool, table, history)
+	defer cleanupIntegrationObjects(t, database, table, history)
 
 	if _, err := runner.Apply(ctx); err == nil || !strings.Contains(err.Error(), "exceeding configured maximum") {
 		t.Fatalf("expected risk-gate error, got %v", err)
 	}
-	if tableExists(t, ctx, pool, table) {
+	if tableExists(t, ctx, database, table) {
 		t.Fatal("safe migration was applied before risk preflight failed")
 	}
 }
@@ -234,24 +234,24 @@ func TestMigrationErrorSupportsErrorsAs(t *testing.T) {
 	}
 }
 
-func integrationPool(t *testing.T) *pgxpool.Pool {
+func integrationDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
 	if connectionString == "" {
 		t.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
+	database, err := sevlumenpostgres.Open(connectionString)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
-	return pool
+	t.Cleanup(func() { _ = database.Close() })
+	return database
 }
 
 func buildArtifact(t *testing.T, root, id, up, down string, risk migration.Risk) artifact.Artifact {
@@ -260,7 +260,7 @@ func buildArtifact(t *testing.T, root, id, up, down string, risk migration.Risk)
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := artifact.Build(id, postgres.MigrationSQL{Up: up, Down: down, Risk: risk}, snapshot)
+	value, err := artifact.Build(id, ormpostgres.MigrationSQL{Up: up, Down: down, Risk: risk}, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,19 +274,19 @@ func integrationSuffix() string {
 	return fmt.Sprintf("%x", time.Now().UnixNano())
 }
 
-func tableExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table string) bool {
+func tableExists(t *testing.T, ctx context.Context, database *sql.DB, table string) bool {
 	t.Helper()
 	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+table).Scan(&exists); err != nil {
+	if err := database.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+table).Scan(&exists); err != nil {
 		t.Fatal(err)
 	}
 	return exists
 }
 
-func columnExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, column string) bool {
+func columnExists(t *testing.T, ctx context.Context, database *sql.DB, table, column string) bool {
 	t.Helper()
 	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS (
+	if err := database.QueryRowContext(ctx, `SELECT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
     )`, table, column).Scan(&exists); err != nil {
@@ -295,16 +295,24 @@ func columnExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, 
 	return exists
 }
 
-func cleanupIntegrationObjects(t *testing.T, pool *pgxpool.Pool, table, history string) {
+func cleanupIntegrationObjects(t *testing.T, database *sql.DB, table, history string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, name := range []string{table, history} {
-		query := "DROP TABLE IF EXISTS " + pgx.Identifier{"public", name}.Sanitize()
-		if _, err := pool.Exec(ctx, query); err != nil && !errors.Is(err, context.Canceled) {
+		query := "DROP TABLE IF EXISTS " + quoteTestIdentifier("public", name)
+		if _, err := database.ExecContext(ctx, query); err != nil && !errors.Is(err, context.Canceled) {
 			t.Logf("cleanup %s failed: %v", name, err)
 		}
 	}
+}
+
+func quoteTestIdentifier(parts ...string) string {
+	quoted := make([]string, len(parts))
+	for index, part := range parts {
+		quoted[index] = `"` + strings.ReplaceAll(part, `"`, `""`) + `"`
+	}
+	return strings.Join(quoted, ".")
 }
 
 func TestGeneratedArtifactRootIsPortable(t *testing.T) {

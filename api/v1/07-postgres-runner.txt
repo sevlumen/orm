@@ -15,7 +15,7 @@ func (r *Runner) Rollback(ctx context.Context, count int) ([]Result, error)
 
 func (r *Runner) Status(ctx context.Context) ([]Status, error)
 
-func New(pool *pgxpool.Pool, config Config) (*Runner, error)
+func New(db *sql.DB, config Config) (*Runner, error)
 
 type Config struct {
 	MigrationsDir string

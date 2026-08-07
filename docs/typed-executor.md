@@ -1,19 +1,19 @@
-# Typed pgx executor
+# Typed database/sql executor
 
-The `postgres/query` executor runs immutable typed builders through `pgxpool.Pool` or `pgx.Tx`. Generated table scan functions remain the only row-mapping path; executor helpers do not use reflection while scanning rows.
+The `postgres/query` executor runs immutable typed builders through the standard `database/sql` execution contracts. `*sql.DB`, `*sql.Conn`, and `*sql.Tx` satisfy the runtime interfaces. Generated table scan functions remain the only row-mapping path; executor helpers do not use reflection while scanning rows.
 
 ## Create an executor
 
 ```go
-executor, err := query.NewExecutor(pool)
+executor, err := query.NewExecutor(database)
 if err != nil {
     return err
 }
 ```
 
-An executor is safe for concurrent reuse when its database implementation and observer are also concurrency-safe. `pgxpool.Pool` is the normal application-level implementation. A transaction-bound executor must remain inside its transaction callback.
+An executor is safe for concurrent reuse when its database implementation and observer are concurrency-safe. `*sql.DB` is the normal application-level implementation. A transaction-bound executor must remain inside its transaction callback.
 
-Typed-nil databases, observers, transaction beginners, transactions, and batch result implementations are rejected instead of failing later with a panic.
+Typed-nil databases, observers, transaction beginners, and transactions are rejected instead of failing later with a panic.
 
 ## Select rows
 
@@ -33,20 +33,19 @@ user, found, err := query.FetchOptional(ctx, executor,
 )
 ```
 
-`FetchOne` and `FetchOptional` apply `LIMIT 1`. `FetchOne` returns an error wrapping `pgx.ErrNoRows`; `FetchOptional` returns `found=false` without an error.
-
-Every multi-row path closes `pgx.Rows` and checks `Rows.Err()` after closure.
+`FetchOne` and `FetchOptional` apply `LIMIT 1`. `FetchOne` returns an error wrapping `sql.ErrNoRows`; `FetchOptional` returns `found=false` without an error. Every multi-row path closes `*sql.Rows` and checks `Rows.Err()`.
 
 ## Mutations
 
-Non-returning helpers return a `pgconn.CommandTag`:
+Non-returning helpers return a driver-neutral `query.Result`:
 
 ```go
-tag, err := query.ExecUpdate(ctx, executor,
+result, err := query.ExecUpdate(ctx, executor,
     query.Update(Users.Table).
         Set(Users.Active.Set(false)).
         Where(Users.ID.Eq(id)),
 )
+rowsAffected := result.RowsAffected
 ```
 
 Returning helpers are available in exactly-one and all-row forms:
@@ -69,15 +68,15 @@ updated, err := query.UpdateAll(ctx, executor,
 
 Available pairs are `InsertOne` / `InsertAll`, `UpdateOne` / `UpdateAll`, and `DeleteOne` / `DeleteAll`.
 
-`InsertOne` rejects a multi-row input before execution. `UpdateOne` and `DeleteOne` detect multiple returned rows and return an error wrapping `query.ErrMultipleRows`. PostgreSQL has already performed the mutation when cardinality is detected, so use `InTransaction` when a cardinality error must roll the operation back.
+`InsertOne` rejects a multi-row input before execution. `UpdateOne` and `DeleteOne` detect multiple returned rows and return an error wrapping `query.ErrMultipleRows`. PostgreSQL has already performed the mutation when cardinality is detected, so use `InTransaction` when the caller needs a cardinality error to roll the operation back.
 
 ## Transactions
 
 ```go
 err := query.InTransaction(
     ctx,
-    pool,
-    pgx.TxOptions{IsoLevel: pgx.Serializable},
+    database,
+    query.TxOptions{Isolation: query.IsolationSerializable},
     func(txExecutor *query.Executor) error {
         if _, err := query.ExecUpdate(ctx, txExecutor, update); err != nil {
             return err
@@ -99,18 +98,16 @@ Mutation batches are immutable:
 ```go
 batch := query.QueueInsert(query.NewBatch(), firstInsert)
 batch = query.QueueUpdate(batch, secondUpdate)
-tags, err := query.ExecBatch(ctx, executor, batch)
+results, err := query.ExecBatch(ctx, executor, batch)
 ```
 
 Returning builders are rejected in mutation batches. `FetchBatch` accepts homogeneous typed `SELECT` builders and returns one result slice per builder.
 
-All batch results are closed on success and failure. pgx may execute a sent batch as an implicit transaction; callers must still treat the returned error as authoritative and must not assume partial command tags represent committed work.
-
-Batch observer events cover result consumption for each reached item. Later items do not receive events after an earlier item fails.
+When the executor is backed by `*sql.DB` or `*sql.Conn`, queued mutations execute sequentially inside one explicit transaction. When it is already backed by `*sql.Tx`, the caller owns the surrounding transaction. The v1 implementation favors deterministic atomicity over hidden protocol pipelining.
 
 ## Cancellation
 
-All operations use the supplied context. A timeout or cancellation is returned as an `ExecutionError` cause. Batch results and rows are closed before returning so a healthy pool connection can be reused; pgx may close a connection if it cannot resynchronize it after a protocol error.
+All operations use the supplied context. A timeout or cancellation is returned as an `ExecutionError` cause. Rows are closed before returning so a healthy pooled connection can be reused. The Sevlumen PostgreSQL driver discards a backend when protocol state cannot be trusted.
 
 ## Observability and error privacy
 
@@ -123,7 +120,7 @@ type Observer interface {
 
 Observers may be called concurrently. Observer panics are recovered and ignored so instrumentation cannot change query semantics.
 
-`Event` contains operation name, SQL, timing, rows affected, and a structured error. Statement argument values are never attached to events.
+`Event` contains operation name, parameterized SQL, timing, rows affected, and a structured error. Statement argument values are never attached to events.
 
 `ExecutionError.Error()` contains the operation and SQL only. It intentionally omits raw driver error text because PostgreSQL errors can contain database values. The original cause remains available through `errors.Is`, `errors.As`, and `Unwrap`; applications should apply their own redaction policy before logging underlying driver errors.
 

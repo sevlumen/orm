@@ -2,6 +2,7 @@ package ormcli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,31 +11,35 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/internal/buildinfo"
+	postgres "github.com/sevlumen/postgres"
 )
 
 const outputVersion = 1
 
 // App is a testable orm command runtime.
 type App struct {
-	In        io.Reader
-	Out       io.Writer
-	Err       io.Writer
-	LookupEnv func(string) (string, bool)
-	OpenPool  func(context.Context, string) (*pgxpool.Pool, error)
-	BuildInfo func() buildinfo.Info
+	In           io.Reader
+	Out          io.Writer
+	Err          io.Writer
+	LookupEnv    func(string) (string, bool)
+	OpenDatabase func(context.Context, string) (*sql.DB, error)
+	BuildInfo    func() buildinfo.Info
+}
+
+func openDatabase(_ context.Context, databaseURL string) (*sql.DB, error) {
+	return postgres.Open(databaseURL)
 }
 
 // New returns a CLI runtime with process defaults.
 func New() *App {
 	return &App{
-		In:        os.Stdin,
-		Out:       os.Stdout,
-		Err:       os.Stderr,
-		LookupEnv: os.LookupEnv,
-		OpenPool:  pgxpool.New,
-		BuildInfo: buildinfo.Current,
+		In:           os.Stdin,
+		Out:          os.Stdout,
+		Err:          os.Stderr,
+		LookupEnv:    os.LookupEnv,
+		OpenDatabase: openDatabase,
+		BuildInfo:    buildinfo.Current,
 	}
 }
 
@@ -96,8 +101,8 @@ func (app *App) ensureDefaults() {
 	if app.LookupEnv == nil {
 		app.LookupEnv = os.LookupEnv
 	}
-	if app.OpenPool == nil {
-		app.OpenPool = pgxpool.New
+	if app.OpenDatabase == nil {
+		app.OpenDatabase = openDatabase
 	}
 	if app.BuildInfo == nil {
 		app.BuildInfo = buildinfo.Current

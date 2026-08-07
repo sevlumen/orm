@@ -2,14 +2,14 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/postgres/query"
+	sevlumenpostgres "github.com/sevlumen/postgres"
 )
 
 type injectionRecord struct {
@@ -24,22 +24,25 @@ func TestTypedQueriesResistSQLInjectionAgainstPostgreSQL(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
+	database, err := sevlumenpostgres.Open(connectionString)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	defer database.Close()
+	if err := database.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	tableName := "sl_injection_values_" + suffix
 	sentinelName := "sl_injection_sentinel_" + suffix
-	defer dropInjectionTable(pool, tableName)
-	defer dropInjectionTable(pool, sentinelName)
+	defer dropInjectionTable(database, tableName)
+	defer dropInjectionTable(database, sentinelName)
 
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+pgx.Identifier{tableName}.Sanitize()+" (id bigint PRIMARY KEY, email text NOT NULL)"); err != nil {
+	if _, err := database.ExecContext(ctx, "CREATE TABLE "+quoteCLIIdentifier(tableName)+" (id bigint PRIMARY KEY, email text NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+pgx.Identifier{sentinelName}.Sanitize()+" (id bigint PRIMARY KEY)"); err != nil {
+	if _, err := database.ExecContext(ctx, "CREATE TABLE "+quoteCLIIdentifier(sentinelName)+" (id bigint PRIMARY KEY)"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -65,11 +68,11 @@ func TestTypedQueriesResistSQLInjectionAgainstPostgreSQL(t *testing.T) {
 	}
 	for index, payload := range payloads {
 		id := int64(index + 1)
-		if _, err := pool.Exec(ctx, "INSERT INTO "+pgx.Identifier{tableName}.Sanitize()+" (id, email) VALUES ($1, $2)", id, payload); err != nil {
+		if _, err := database.ExecContext(ctx, "INSERT INTO "+quoteCLIIdentifier(tableName)+" (id, email) VALUES ($1, $2)", id, payload); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+pgx.Identifier{tableName}.Sanitize()+" (id, email) VALUES ($1, $2)", int64(999), "ordinary@example.com"); err != nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+quoteCLIIdentifier(tableName)+" (id, email) VALUES ($1, $2)", int64(999), "ordinary@example.com"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +81,7 @@ func TestTypedQueriesResistSQLInjectionAgainstPostgreSQL(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows, err := pool.Query(ctx, statement.SQL, statement.Args...)
+		rows, err := database.QueryContext(ctx, statement.SQL, statement.Args...)
 		if err != nil {
 			t.Fatalf("execute payload %q: %v", payload, err)
 		}
@@ -99,7 +102,7 @@ func TestTypedQueriesResistSQLInjectionAgainstPostgreSQL(t *testing.T) {
 		if len(values) != 1 || values[0].ID != int64(index+1) || values[0].Email != payload {
 			t.Fatalf("payload %q returned %#v, want exactly its stored row", payload, values)
 		}
-		assertInjectionTableExists(t, ctx, pool, sentinelName)
+		assertInjectionTableExists(t, ctx, database, sentinelName)
 	}
 
 	tautology, err := query.Select(table).Where(email.Eq(`missing' OR 1=1 --`)).Build()
@@ -107,7 +110,7 @@ func TestTypedQueriesResistSQLInjectionAgainstPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	rows, err := pool.Query(ctx, tautology.SQL, tautology.Args...)
+	rows, err := database.QueryContext(ctx, tautology.SQL, tautology.Args...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,24 +134,27 @@ func TestTypedTableIdentifierInjectionIsFailClosedOrQuoted(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
+	database, err := sevlumenpostgres.Open(connectionString)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	defer database.Close()
+	if err := database.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	suffix := fmt.Sprintf("%x", time.Now().UnixNano())
 	sentinelName := "sl_identifier_sentinel_" + suffix
 	maliciousName := `sl_identifier_` + suffix + `"; DROP TABLE ` + sentinelName + `; --`
-	defer dropInjectionTable(pool, maliciousName)
-	defer dropInjectionTable(pool, sentinelName)
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+pgx.Identifier{sentinelName}.Sanitize()+" (id bigint PRIMARY KEY)"); err != nil {
+	defer dropInjectionTable(database, maliciousName)
+	defer dropInjectionTable(database, sentinelName)
+	if _, err := database.ExecContext(ctx, "CREATE TABLE "+quoteCLIIdentifier(sentinelName)+" (id bigint PRIMARY KEY)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+pgx.Identifier{maliciousName}.Sanitize()+" (id bigint PRIMARY KEY, email text NOT NULL)"); err != nil {
+	if _, err := database.ExecContext(ctx, "CREATE TABLE "+quoteCLIIdentifier(maliciousName)+" (id bigint PRIMARY KEY, email text NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO "+pgx.Identifier{maliciousName}.Sanitize()+" (id, email) VALUES (1, 'safe')"); err != nil {
+	if _, err := database.ExecContext(ctx, "INSERT INTO "+quoteCLIIdentifier(maliciousName)+" (id, email) VALUES (1, 'safe')"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,14 +164,14 @@ func TestTypedTableIdentifierInjectionIsFailClosedOrQuoted(t *testing.T) {
 		return value, err
 	})
 	if err != nil {
-		assertInjectionTableExists(t, ctx, pool, sentinelName)
+		assertInjectionTableExists(t, ctx, database, sentinelName)
 		return
 	}
 	statement, err := query.Select(table).Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := pool.Query(ctx, statement.SQL, statement.Args...)
+	rows, err := database.QueryContext(ctx, statement.SQL, statement.Args...)
 	if err != nil {
 		t.Fatalf("quoted malicious identifier did not address its single table safely: %v", err)
 	}
@@ -180,13 +186,13 @@ func TestTypedTableIdentifierInjectionIsFailClosedOrQuoted(t *testing.T) {
 	if value.ID != 1 || value.Email != "safe" {
 		t.Fatalf("unexpected row: %#v", value)
 	}
-	assertInjectionTableExists(t, ctx, pool, sentinelName)
+	assertInjectionTableExists(t, ctx, database, sentinelName)
 }
 
-func assertInjectionTableExists(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tableName string) {
+func assertInjectionTableExists(t *testing.T, ctx context.Context, database *sql.DB, tableName string) {
 	t.Helper()
 	var exists bool
-	if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", tableName).Scan(&exists); err != nil {
+	if err := database.QueryRowContext(ctx, "SELECT to_regclass($1) IS NOT NULL", tableName).Scan(&exists); err != nil {
 		t.Fatal(err)
 	}
 	if !exists {
@@ -194,8 +200,8 @@ func assertInjectionTableExists(t *testing.T, ctx context.Context, pool *pgxpool
 	}
 }
 
-func dropInjectionTable(pool *pgxpool.Pool, tableName string) {
+func dropInjectionTable(database *sql.DB, tableName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS "+pgx.Identifier{tableName}.Sanitize()+" CASCADE")
+	_, _ = database.ExecContext(ctx, "DROP TABLE IF EXISTS "+quoteCLIIdentifier(tableName)+" CASCADE")
 }
