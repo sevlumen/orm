@@ -2,6 +2,7 @@ package ormcli
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"net/url"
@@ -9,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sevlumen/orm/migration"
 	"github.com/sevlumen/orm/postgres/runner"
 )
@@ -45,10 +45,7 @@ type optionalInt64 struct {
 	set   bool
 }
 
-func (value *optionalInt64) String() string {
-	return strconv.FormatInt(value.value, 10)
-}
-
+func (value *optionalInt64) String() string { return strconv.FormatInt(value.value, 10) }
 func (value *optionalInt64) Set(input string) error {
 	parsed, err := strconv.ParseInt(input, 10, 64)
 	if err != nil {
@@ -126,29 +123,29 @@ func (app *App) resolveDatabase(flags databaseFlags) (resolvedDatabase, error) {
 	}, nil
 }
 
-func (app *App) openRunner(parent context.Context, resolved resolvedDatabase) (*pgxpool.Pool, *runner.Runner, context.Context, context.CancelFunc, error) {
+func (app *App) openRunner(parent context.Context, resolved resolvedDatabase) (*sql.DB, *runner.Runner, context.Context, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(parent, resolved.timeout)
-	pool, err := app.OpenPool(ctx, resolved.url)
+	db, err := app.OpenDatabase(resolved.url)
 	if err != nil {
 		cancel()
 		return nil, nil, nil, nil, protectError(fmt.Errorf("connect to PostgreSQL: %w", err), resolved.secrets)
 	}
-	if pool == nil {
+	if db == nil {
 		cancel()
-		return nil, nil, nil, nil, fmt.Errorf("database connector returned nil pool")
+		return nil, nil, nil, nil, fmt.Errorf("database connector returned nil database")
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
 		cancel()
 		return nil, nil, nil, nil, protectError(fmt.Errorf("ping PostgreSQL: %w", err), resolved.secrets)
 	}
-	migrationRunner, err := runner.New(pool, resolved.runner)
+	migrationRunner, err := runner.New(db, resolved.runner)
 	if err != nil {
-		pool.Close()
+		_ = db.Close()
 		cancel()
 		return nil, nil, nil, nil, err
 	}
-	return pool, migrationRunner, ctx, cancel, nil
+	return db, migrationRunner, ctx, cancel, nil
 }
 
 type protectedError struct {
@@ -165,16 +162,13 @@ func (errorValue *protectedError) Error() string {
 	}
 	return message
 }
-
 func (errorValue *protectedError) Unwrap() error { return errorValue.err }
-
 func protectError(err error, secrets []string) error {
 	if err == nil {
 		return nil
 	}
 	return &protectedError{err: err, secrets: append([]string(nil), secrets...)}
 }
-
 func databaseSecrets(databaseURL string) []string {
 	secrets := []string{databaseURL}
 	parsed, err := url.Parse(databaseURL)
@@ -185,7 +179,4 @@ func databaseSecrets(databaseURL string) []string {
 	}
 	return secrets
 }
-
-func riskRequiresConfirmation(risk migration.Risk) bool {
-	return risk == migration.RiskDestructive
-}
+func riskRequiresConfirmation(risk migration.Risk) bool { return risk == migration.RiskDestructive }
