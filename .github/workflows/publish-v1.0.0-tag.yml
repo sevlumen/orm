@@ -1,0 +1,43 @@
+name: Publish v1.0.0 tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/releases/v1.0.0.request
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Create reviewed annotated tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='48f3d6df6b9dfd9cbeb5205db7c1bbad6bde3500'
+          tag='v1.0.0'
+
+          git cat-file -e "${target}^{commit}"
+          git merge-base --is-ancestor "$target" origin/main
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+            test "$(git cat-file -t "$tag")" = tag
+            test "$(git rev-list -n1 "$tag")" = "$target"
+          else
+            git tag -a "$tag" "$target" -m "Sevlumen ORM v1.0.0"
+            test "$(git cat-file -t "$tag")" = tag
+            test "$(git rev-list -n1 "$tag")" = "$target"
+            git push origin "refs/tags/${tag}"
+          fi
