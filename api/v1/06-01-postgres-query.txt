@@ -93,3 +93,4 @@ func NewOneRelation[S any, T any, K comparable](
 	query RelationQuery[T, K],
 	options ...RelationOption,
 ) (OneRelation[S, T, K], error)
+
