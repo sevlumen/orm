@@ -4,12 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type executorIntegrationColumns struct {
@@ -19,32 +15,23 @@ type executorIntegrationColumns struct {
 }
 
 func TestExecutorTransactionsBatchesAndCancellationAgainstPostgreSQL(t *testing.T) {
-	connectionString := os.Getenv("SEVLUMEN_TEST_DATABASE_URL")
-	if connectionString == "" {
-		t.Skip("SEVLUMEN_TEST_DATABASE_URL is not set")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	db := openIntegrationDatabase(t)
 
 	tableName := fmt.Sprintf("sl_executor_users_%x", time.Now().UnixNano())
-	qualified := pgx.Identifier{tableName}.Sanitize()
-	if _, err := pool.Exec(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, email text UNIQUE NOT NULL, active boolean NOT NULL)"); err != nil {
+	qualified := quoteIdentifier(tableName)
+	if _, err := db.ExecContext(ctx, "CREATE TABLE "+qualified+" (id bigint PRIMARY KEY, email text UNIQUE NOT NULL, active boolean NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, _ = pool.Exec(cleanupCtx, "DROP TABLE IF EXISTS "+qualified)
+		_, _ = db.ExecContext(cleanupCtx, "DROP TABLE IF EXISTS "+qualified)
 	}()
 
 	table, columns := executorIntegrationMetadata(t, tableName)
-	executor, err := NewExecutor(pool)
+	executor, err := NewExecutor(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +67,7 @@ func TestExecutorTransactionsBatchesAndCancellationAgainstPostgreSQL(t *testing.
 	}
 
 	callbackErr := errors.New("force rollback")
-	err = InTransaction(ctx, pool, pgx.TxOptions{}, func(transactionExecutor *Executor) error {
+	err = InTransaction(ctx, db, TxOptions{}, func(transactionExecutor *Executor) error {
 		_, insertErr := ExecInsert(ctx, transactionExecutor, Insert(table).
 			Row(columns.ID.Set(90), columns.Email.Set("rollback@example.com"), columns.Active.Set(true)))
 		if insertErr != nil {
@@ -100,7 +87,7 @@ func TestExecutorTransactionsBatchesAndCancellationAgainstPostgreSQL(t *testing.
 				t.Fatalf("recovered panic = %#v, want %#v", recovered, panicValue)
 			}
 		}()
-		_ = InTransaction(ctx, pool, pgx.TxOptions{}, func(transactionExecutor *Executor) error {
+		_ = InTransaction(ctx, db, TxOptions{}, func(transactionExecutor *Executor) error {
 			if _, insertErr := ExecInsert(ctx, transactionExecutor, Insert(table).
 				Row(columns.ID.Set(91), columns.Email.Set("panic@example.com"), columns.Active.Set(true))); insertErr != nil {
 				t.Fatal(insertErr)
@@ -110,7 +97,7 @@ func TestExecutorTransactionsBatchesAndCancellationAgainstPostgreSQL(t *testing.
 	}()
 	assertExecutorRowAbsent(t, ctx, executor, table, columns, 91)
 
-	err = InTransaction(ctx, pool, pgx.TxOptions{}, func(transactionExecutor *Executor) error {
+	err = InTransaction(ctx, db, TxOptions{}, func(transactionExecutor *Executor) error {
 		_, updateErr := UpdateOne(ctx, transactionExecutor, Update(table).
 			Set(columns.Active.Set(false)).
 			AllRows())
@@ -131,12 +118,12 @@ func TestExecutorTransactionsBatchesAndCancellationAgainstPostgreSQL(t *testing.
 		Row(columns.ID.Set(4), columns.Email.Set("four@example.com"), columns.Active.Set(true)))
 	batch = QueueInsert(batch, Insert(table).
 		Row(columns.ID.Set(5), columns.Email.Set("five@example.com"), columns.Active.Set(false)))
-	tags, err := ExecBatch(ctx, executor, batch)
+	results, err := ExecBatch(ctx, executor, batch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tags) != 2 || tags[0].RowsAffected() != 1 || tags[1].RowsAffected() != 1 {
-		t.Fatalf("unexpected batch tags: %#v", tags)
+	if len(results) != 2 || results[0].RowsAffected != 1 || results[1].RowsAffected != 1 {
+		t.Fatalf("unexpected batch results: %#v", results)
 	}
 
 	selectedBatches, err := FetchBatch(ctx, executor,
@@ -158,7 +145,7 @@ func TestExecutorTransactionsBatchesAndCancellationAgainstPostgreSQL(t *testing.
 		t.Fatal("expected duplicate-key batch error")
 	}
 	assertExecutorRowAbsent(t, ctx, executor, table, columns, 6)
-	if err := pool.Ping(ctx); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		t.Fatalf("pool unusable after failed batch: %v", err)
 	}
 
@@ -170,7 +157,7 @@ func TestExecutorTransactionsBatchesAndCancellationAgainstPostgreSQL(t *testing.
 	if cancelCtx.Err() == nil {
 		t.Fatal("cancellation context did not expire")
 	}
-	if err := pool.Ping(ctx); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		t.Fatalf("pool unusable after cancellation: %v", err)
 	}
 }
