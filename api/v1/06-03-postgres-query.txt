@@ -88,3 +88,4 @@ var ErrMultipleRows = errors.New("query: expected exactly one returned row")
 var ErrRelationMultipleRows = errors.New("query: one relation returned multiple target rows")
 
 var ErrRelationUnexpectedKey = errors.New("query: relation query returned an unexpected target key")
+
