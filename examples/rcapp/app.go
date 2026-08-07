@@ -68,13 +68,18 @@ func NewExecutor(db query.DB, recorder *Recorder) (*query.Executor, error) {
 
 // CreateAccount inserts and returns one account through generated metadata.
 func CreateAccount(ctx context.Context, executor *query.Executor, account Account) (Account, error) {
-	return query.InsertOne(ctx, executor, query.Insert(AccountORM.Table).Row(
+	assignments := []query.Assignment[Account]{
 		AccountORM.ID.Set(account.ID),
 		AccountORM.LoginEmail.Set(account.LoginEmail),
-		AccountORM.LegacyNote.Set(account.LegacyNote),
-		AccountORM.DisplayName.Set(account.DisplayName),
 		AccountORM.Active.Set(account.Active),
-	))
+	}
+	if account.LegacyNote != nil {
+		assignments = append(assignments, AccountORM.LegacyNote.Set(account.LegacyNote))
+	}
+	if account.DisplayName != nil {
+		assignments = append(assignments, AccountORM.DisplayName.Set(account.DisplayName))
+	}
+	return query.InsertOne(ctx, executor, query.Insert(AccountORM.Table).Row(assignments...))
 }
 
 // FindAccountByEmail executes a parameterized optional lookup.
